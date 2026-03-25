@@ -319,8 +319,24 @@ npm run lint          # Code quality checks
 - Query execution metrics, error rates, latency
 - Set up alerts for critical failures
 
+## Testing & Demo
+
+For a complete walkthrough of all features with step-by-step test scenarios, expected behaviors, and demo talking points, see [TESTING.md](TESTING.md).
+
+**Quick Test Checklist:**
+- [ ] NLU & context awareness
+- [ ] Task decomposition & work queue
+- [ ] Meeting intelligence
+- [ ] Proactive notifications
+- [ ] Report generation
+- [ ] Memory & preferences
+- [ ] Multi-agent coordination
+- [ ] Error handling
+- [ ] Voice interaction (optional)
+
 ## Support & Documentation
 
+- **Testing Guide**: [TESTING.md](TESTING.md) - Complete test suite with expected outcomes
 - **Deployment Issues**: See [SKILL.md](SKILL.md) for detailed troubleshooting
 - **API Reference**: [agent.yaml](cassidy/agent.yaml) defines all environment variables
 - **Architecture Deep Dive**: [SKILL.md](SKILL.md) includes error codes and design patterns
