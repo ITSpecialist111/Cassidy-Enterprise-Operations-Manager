@@ -26,6 +26,7 @@ import { registerUser } from './proactive/userRegistry';
 import { recordInteraction, type InteractionSummary } from './intelligence/userProfiler';
 import { extractMemories, recall } from './memory/longTermMemory';
 import { getUserInsight } from './intelligence/userProfiler';
+import { config as appConfig, features } from './featureConfig';
 
 // State interfaces
 interface ConversationData {
@@ -42,15 +43,15 @@ const azureADTokenProvider = getBearerTokenProvider(
   'https://cognitiveservices.azure.com/.default'
 );
 
-if (!process.env.AZURE_OPENAI_ENDPOINT) {
+if (!features.openAiConfigured) {
   console.warn('WARNING: AZURE_OPENAI_ENDPOINT is not set. OpenAI calls will fail.');
 }
 
 const openai = new AzureOpenAI({
   azureADTokenProvider,
-  endpoint: process.env.AZURE_OPENAI_ENDPOINT || 'https://placeholder.openai.azure.com',
+  endpoint: appConfig.openAiEndpoint,
   apiVersion: '2025-04-01-preview',
-  deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
+  deployment: appConfig.openAiDeployment,
   timeout: 120_000,  // 120s hard timeout — GPT-5 reasoning can be slow
   maxRetries: 1,
 });

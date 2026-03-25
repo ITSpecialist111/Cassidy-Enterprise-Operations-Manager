@@ -4,15 +4,14 @@
 // Autonomous execution loop — polls the work queue every 2 minutes,
 // executes pending subtasks, handles retries, and notifies users proactively.
 
-import { AzureOpenAI } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
-import { getBearerTokenProvider, DefaultAzureCredential } from '@azure/identity';
 import { CloudAdapter } from '@microsoft/agents-hosting';
 import type { ConversationReference } from '@microsoft/agents-activity';
 import {
   getPendingItems, updateWorkItem, WorkItem, Subtask,
 } from '../workQueue/workQueue';
 import { getAllTools, executeTool } from '../tools/index';
+import { getSharedOpenAI } from '../auth';
 
 const POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_RETRIES = 3;
@@ -88,8 +87,7 @@ async function processItem(item: WorkItem): Promise<void> {
     return;
   }
 
-  console.log(`[AutonomousLoop] Executing subtask "${next.description}" for goal: "${item.goal.slice(0, 60)}"`);
-  await updateWorkItem({ rowKey: item.rowKey, status: 'in_progress' });
+  console.debug(`[AutonomousLoop] Executing subtask ${subtasks.indexOf(next) + 1}/${subtasks.length} for work item ${item.rowKey}`);  await updateWorkItem({ rowKey: item.rowKey, status: 'in_progress' });
 
   try {
     const result = await executeSubtask(next, subtasks, item.goal);
@@ -134,14 +132,7 @@ async function executeSubtask(
   allSubtasks: Subtask[],
   parentGoal: string,
 ): Promise<string> {
-  const credential = new DefaultAzureCredential();
-  const azureADTokenProvider = getBearerTokenProvider(credential, 'https://cognitiveservices.azure.com/.default');
-  const openai = new AzureOpenAI({
-    azureADTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   // Build context from completed subtask results
   const completedContext = allSubtasks

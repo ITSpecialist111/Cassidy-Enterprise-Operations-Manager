@@ -7,8 +7,7 @@
 // forecast task delays, capacity crunches, and approval bottlenecks.
 // ---------------------------------------------------------------------------
 
-import { AzureOpenAI } from 'openai';
-import { cognitiveServicesTokenProvider } from '../auth';
+import { getSharedOpenAI } from '../auth';
 import { upsertEntity, getEntity, listEntities } from '../memory/tableStorage';
 import { getOverdueTasks, getTeamWorkload, getPendingApprovals } from '../tools/operationsTools';
 
@@ -118,12 +117,7 @@ async function generatePredictions(
   predictedDate?: string;
   recommendation: string;
 }>> {
-  const openai = new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   const operationalSnapshot = {
     overdueCount: overdue.total,

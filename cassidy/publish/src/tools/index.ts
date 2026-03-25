@@ -3,6 +3,7 @@
 
 import type { ChatCompletionTool } from 'openai/resources/chat';
 import { TurnContext } from '@microsoft/agents-hosting';
+import { config as appConfig } from '../featureConfig';
 
 import {
   getOverdueTasks,
@@ -119,12 +120,12 @@ function getOrganizationContext(): {
   description: string;
 } {
   return {
-    name: process.env.ORG_NAME ?? 'Contoso Corp',
-    industry: process.env.ORG_INDUSTRY ?? 'Enterprise Technology',
-    operationsTeamChannel: process.env.OPS_TEAMS_CHANNEL_ID ?? 'demo-channel',
-    managerEmail: process.env.MANAGER_EMAIL ?? 'manager@contoso.example.com',
-    timezone: process.env.ORG_TIMEZONE ?? 'AEDT (UTC+11)',
-    description: `${process.env.ORG_NAME ?? 'Contoso Corp'} is a mid-market enterprise operating across multiple business units. The Operations team coordinates projects, approvals, and cross-functional workflows across the organisation.`,
+    name: appConfig.orgName,
+    industry: appConfig.orgIndustry,
+    operationsTeamChannel: appConfig.opsTeamsChannelId,
+    managerEmail: appConfig.managerEmail,
+    timezone: appConfig.orgTimezone,
+    description: `${appConfig.orgName} is a mid-market enterprise operating across multiple business units. The Operations team coordinates projects, approvals, and cross-functional workflows across the organisation.`,
   };
 }
 
@@ -229,7 +230,7 @@ export async function executeTool(
   params: Record<string, unknown>,
   context?: TurnContext,
 ): Promise<string> {
-  console.log(`[Cassidy] Tool call → ${name}`, JSON.stringify(params, null, 2));
+  console.debug(`[Cassidy] Tool call → ${name}`, Object.keys(params).join(','));
 
   try {
     let result: ToolResult;
@@ -600,7 +601,7 @@ export async function executeAutonomousStandup(): Promise<StandupSummary> {
   const teamsMessage = formatForTeams({ content: standupMarkdown, message_type: 'standup' });
 
   // Step 3 — Post to Operations Teams channel
-  const channelId = process.env.OPS_TEAMS_CHANNEL_ID ?? 'demo-channel';
+  const channelId = appConfig.opsTeamsChannelId;
   const teamsResult = await sendTeamsMessage({
     channel_id: channelId,
     message: teamsMessage,
@@ -615,7 +616,7 @@ export async function executeAutonomousStandup(): Promise<StandupSummary> {
   // Step 4 — Email manager with headline summary
   const overdue = getOverdueTasks({ include_at_risk: false });
   const approvals = getPendingApprovals({ older_than_days: 2 });
-  const managerEmail = process.env.MANAGER_EMAIL ?? 'manager@contoso.example.com';
+  const managerEmail = appConfig.managerEmail;
 
   const emailBody = [
     `Daily Operations Standup — ${localDate}`,
@@ -651,8 +652,7 @@ export async function executeAutonomousStandup(): Promise<StandupSummary> {
     emailResult,
   };
 
-  console.log(`[Cassidy] Autonomous standup completed at ${isoDate}`);
-  actionsCompleted.forEach(a => console.log(`  ✔ ${a}`));
+  console.log(`[Cassidy] Autonomous standup completed at ${isoDate} (${actionsCompleted.length} actions)`);
 
   return summary;
 }

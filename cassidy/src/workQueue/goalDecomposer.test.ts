@@ -1,17 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock @azure/identity
-vi.mock('@azure/identity', () => ({
-  DefaultAzureCredential: class {},
-  getBearerTokenProvider: vi.fn(() => async () => 'mock-token'),
-}));
-
-// Mock OpenAI
+// Mock auth — goalDecomposer now uses getSharedOpenAI from auth
 const mockCreate = vi.fn();
-vi.mock('openai', () => ({
-  AzureOpenAI: class {
-    chat = { completions: { create: mockCreate } };
-  },
+vi.mock('../auth', () => ({
+  getSharedOpenAI: vi.fn(() => ({
+    chat: { completions: { create: mockCreate } },
+  })),
 }));
 
 import { decomposeGoal, isComplexGoal } from './goalDecomposer';

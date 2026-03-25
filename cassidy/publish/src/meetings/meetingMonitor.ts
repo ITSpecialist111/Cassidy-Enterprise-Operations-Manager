@@ -8,8 +8,7 @@
 // formulates a response via GPT-5, and posts to the meeting chat.
 // ---------------------------------------------------------------------------
 
-import { AzureOpenAI } from 'openai';
-import { getGraphToken, cognitiveServicesTokenProvider } from '../auth';
+import { getGraphToken, getSharedOpenAI } from '../auth';
 import {
   startMeetingSession,
   endMeetingSession,
@@ -292,12 +291,7 @@ async function composeMeetingResponse(
   intent: string,
 ): Promise<string | null> {
   try {
-    const openai = new AzureOpenAI({
-      azureADTokenProvider: cognitiveServicesTokenProvider,
-      endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-      apiVersion: '2025-04-01-preview',
-      deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-    });
+    const openai = getSharedOpenAI();
 
     const recentTranscript = getTranscriptAsText(meetingId, 15);
 

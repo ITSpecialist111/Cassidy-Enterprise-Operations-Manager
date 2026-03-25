@@ -1,8 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock dependencies
+const mockCreate = vi.fn(async () => ({
+  choices: [{ message: { content: 'Hey Alice, you have 3 overdue tasks. Want me to chase them?' } }],
+}));
+
 vi.mock('../auth', () => ({
-  cognitiveServicesTokenProvider: vi.fn(async () => 'mock-token'),
+  getSharedOpenAI: vi.fn(() => ({
+    chat: { completions: { create: mockCreate } },
+  })),
 }));
 
 vi.mock('./userRegistry', () => ({
@@ -69,17 +75,6 @@ vi.mock('../voice/callManager', () => ({
 vi.mock('../voice/voiceAgent', () => ({
   shouldEscalateToVoice: vi.fn(() => false),
 }));
-
-vi.mock('openai', () => {
-  const mockCreate = vi.fn(async () => ({
-    choices: [{ message: { content: 'Hey Alice, you have 3 overdue tasks. Want me to chase them?' } }],
-  }));
-  return {
-    AzureOpenAI: class {
-      chat = { completions: { create: mockCreate } };
-    },
-  };
-});
 
 import { evaluateAllTriggers, composeProactiveMessage } from './proactiveEngine';
 

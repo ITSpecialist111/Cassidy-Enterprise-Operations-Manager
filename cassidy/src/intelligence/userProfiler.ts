@@ -7,8 +7,7 @@
 // peak hours, common requests, and communication patterns.
 // ---------------------------------------------------------------------------
 
-import { AzureOpenAI } from 'openai';
-import { cognitiveServicesTokenProvider } from '../auth';
+import { getSharedOpenAI } from '../auth';
 import { upsertEntity, getEntity, listEntities } from '../memory/tableStorage';
 
 const TABLE = 'CassidyUserInsights';
@@ -117,12 +116,7 @@ export async function analyseUserProfile(userId: string): Promise<{
 
   if (interactions.length < 5) return null; // Need minimum data
 
-  const openai = new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   const interactionSummary = interactions.slice(-20).map(i =>
     `[${i.timestamp}] Topic: ${i.topic}, Tools: ${i.toolsUsed.join(',')||'none'}, Sentiment: ${i.sentiment}, Length: ${i.responseLength}`

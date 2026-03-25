@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock dependencies
+const mockCreate = vi.fn(async () => ({
+  choices: [{
+    message: { role: 'assistant', content: 'Hello, this is Cassidy calling about your overdue tasks.' },
+    finish_reason: 'stop',
+  }],
+}));
+
 vi.mock('../auth', () => ({
-  cognitiveServicesTokenProvider: vi.fn(async () => 'mock-token'),
+  getSharedOpenAI: vi.fn(() => ({
+    chat: { completions: { create: mockCreate } },
+  })),
 }));
 
 vi.mock('./speechProcessor', () => ({
@@ -37,21 +46,6 @@ vi.mock('../tools/index', () => ({
   getAllTools: vi.fn(() => []),
   executeTool: vi.fn(async () => JSON.stringify({ result: 'mock' })),
 }));
-
-// Mock OpenAI
-vi.mock('openai', () => {
-  const mockCreate = vi.fn(async () => ({
-    choices: [{
-      message: { role: 'assistant', content: 'Hello, this is Cassidy calling about your overdue tasks.' },
-      finish_reason: 'stop',
-    }],
-  }));
-  return {
-    AzureOpenAI: class {
-      chat = { completions: { create: mockCreate } };
-    },
-  };
-});
 
 import {
   startVoiceConversation,

@@ -9,8 +9,7 @@
 
 import { CloudAdapter, TurnContext } from '@microsoft/agents-hosting';
 import { ConversationReference } from '@microsoft/agents-activity';
-import { AzureOpenAI } from 'openai';
-import { cognitiveServicesTokenProvider } from '../auth';
+import { getSharedOpenAI } from '../auth';
 import {
   getAllActiveUsers,
   getConversationRefFromProfile,
@@ -196,12 +195,7 @@ export async function composeProactiveMessage(
   action: OutreachAction,
   user: UserProfile,
 ): Promise<string> {
-  const openai = new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   const contextSummary = Object.entries(action.context)
     .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)

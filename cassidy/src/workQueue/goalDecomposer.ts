@@ -3,20 +3,11 @@
 
 // Goal decomposer — uses GPT-5 to break a complex user goal into ordered subtasks.
 
-import { AzureOpenAI } from 'openai';
-import { getBearerTokenProvider, DefaultAzureCredential } from '@azure/identity';
 import type { Subtask } from '../workQueue/workQueue';
+import { getSharedOpenAI } from '../auth';
 
-const credential = new DefaultAzureCredential();
-const azureADTokenProvider = getBearerTokenProvider(credential, 'https://cognitiveservices.azure.com/.default');
-
-function getOpenAI(): AzureOpenAI {
-  return new AzureOpenAI({
-    azureADTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+function getOpenAI() {
+  return getSharedOpenAI();
 }
 
 const DECOMPOSE_PROMPT = `You are Cassidy, an autonomous Operations Manager AI.

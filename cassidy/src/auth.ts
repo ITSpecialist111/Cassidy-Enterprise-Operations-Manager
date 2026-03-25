@@ -7,6 +7,8 @@
 // ---------------------------------------------------------------------------
 
 import { DefaultAzureCredential, getBearerTokenProvider } from '@azure/identity';
+import { AzureOpenAI } from 'openai';
+import { config as appConfig } from './featureConfig';
 
 // Single credential instance for the entire process
 export const sharedCredential = new DefaultAzureCredential();
@@ -16,6 +18,21 @@ export const cognitiveServicesTokenProvider = getBearerTokenProvider(
   sharedCredential,
   'https://cognitiveservices.azure.com/.default',
 );
+
+// Shared AzureOpenAI client — reused by all modules except agent.ts (which has custom timeout)
+let _sharedOpenAI: AzureOpenAI | null = null;
+
+export function getSharedOpenAI(): AzureOpenAI {
+  if (!_sharedOpenAI) {
+    _sharedOpenAI = new AzureOpenAI({
+      azureADTokenProvider: cognitiveServicesTokenProvider,
+      endpoint: appConfig.openAiEndpoint,
+      apiVersion: '2025-04-01-preview',
+      deployment: appConfig.openAiDeployment,
+    });
+  }
+  return _sharedOpenAI;
+}
 
 // Helper: get a Graph API bearer token
 export async function getGraphToken(): Promise<string> {

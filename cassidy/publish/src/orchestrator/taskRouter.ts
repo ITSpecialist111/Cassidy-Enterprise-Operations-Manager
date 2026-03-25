@@ -7,8 +7,7 @@
 // Uses GPT-5 to classify the query domain when it's ambiguous.
 // ---------------------------------------------------------------------------
 
-import { AzureOpenAI } from 'openai';
-import { cognitiveServicesTokenProvider } from '../auth';
+import { getSharedOpenAI } from '../auth';
 import {
   listAgents,
   findAgentByExpertise,
@@ -149,12 +148,7 @@ async function classifyWithGPT5(
   query: string,
   agents: RegisteredAgent[],
 ): Promise<RoutingDecision | null> {
-  const openai = new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   const agentDescriptions = agents.map(a => {
     const expertise = JSON.parse(a.expertise || '[]') as string[];

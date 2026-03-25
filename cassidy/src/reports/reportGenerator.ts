@@ -6,8 +6,8 @@
 // and document creation via MCP tools (Word, Excel, PowerPoint).
 // ---------------------------------------------------------------------------
 
-import { AzureOpenAI } from 'openai';
-import { cognitiveServicesTokenProvider } from '../auth';
+import { getSharedOpenAI } from '../auth';
+import { config as appConfig } from '../featureConfig';
 import { TurnContext } from '@microsoft/agents-hosting';
 import {
   getTemplate,
@@ -94,13 +94,8 @@ async function gatherSectionData(section: ReportSection): Promise<unknown> {
 // GPT-5 narrative composition
 // ---------------------------------------------------------------------------
 
-function getOpenAI(): AzureOpenAI {
-  return new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+function getOpenAI() {
+  return getSharedOpenAI();
 }
 
 async function composeNarrative(
@@ -425,7 +420,7 @@ export async function postReportToTeams(
     message_type: 'report',
   });
 
-  const channel = channelId ?? process.env.OPS_TEAMS_CHANNEL_ID ?? 'demo-channel';
+  const channel = channelId ?? appConfig.opsTeamsChannelId;
 
   return sendTeamsMessage({
     channel_id: channel,

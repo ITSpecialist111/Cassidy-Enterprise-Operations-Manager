@@ -187,7 +187,7 @@ server.post('/api/messages', (req: Request, res: Response) => {
 
 // Agent-to-Agent (A2A) messages endpoint
 server.post('/api/agent-messages', (req: Request, res: Response) => {
-  console.log('A2A message received from:', req.headers['x-agent-id'] || 'unknown-agent');
+  console.debug('A2A message received from:', req.headers['x-agent-id'] || 'unknown-agent');
   const adapter = agentApplication.adapter as CloudAdapter;
   adapter.process(req, res, async (context) => {
     await agentApplication.run(context);
@@ -222,7 +222,7 @@ server.listen(port, host, () => {
   getAllConversationRefs().then(refs => {
     for (const [id, ref] of refs) emptyRefs.set(id, ref);
     console.log(`Autonomous work loop started (${refs.size} persisted conversation ref(s) loaded)`);
-  }).catch(() => console.log('Autonomous work loop started (no persisted refs)'));
+  }).catch((err: unknown) => console.warn('Autonomous work loop started (ref backfill failed):', err));
 
   // Pre-warm managed identity token to avoid IMDS cold-start delay (~60s)
   if (!isDevelopment) {

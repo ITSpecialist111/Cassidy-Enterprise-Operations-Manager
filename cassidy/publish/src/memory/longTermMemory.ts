@@ -12,8 +12,7 @@
 // to match memories to queries (simpler, cheaper, surprisingly effective).
 // ---------------------------------------------------------------------------
 
-import { AzureOpenAI } from 'openai';
-import { cognitiveServicesTokenProvider } from '../auth';
+import { getSharedOpenAI } from '../auth';
 import { upsertEntity, getEntity, listEntities, deleteEntity } from '../memory/tableStorage';
 
 const TABLE = 'CassidyLongTermMemory';
@@ -199,12 +198,7 @@ export async function extractMemories(
   userId: string,
   userName: string,
 ): Promise<MemoryEntry[]> {
-  const openai = new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   try {
     const response = await openai.chat.completions.create({
@@ -363,12 +357,7 @@ async function rankByRelevance(
   candidates: MemoryEntry[],
   maxResults: number,
 ): Promise<MemoryEntry[]> {
-  const openai = new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   const memoryList = candidates.map((m, i) => `[${i}] ${m.content}`).join('\n');
 

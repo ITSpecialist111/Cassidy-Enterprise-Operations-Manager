@@ -535,7 +535,9 @@ export async function findUser(
     const { DefaultAzureCredential } = await import('@azure/identity');
     const cred = new DefaultAzureCredential();
     const tokenResult = await cred.getToken('https://graph.microsoft.com/.default');
-    const q = encodeURIComponent(params.query);
+    // Sanitise single quotes for OData filter (prevent injection)
+    const safeQuery = params.query.replace(/'/g, "''");
+    const q = encodeURIComponent(safeQuery);
     const url = `https://graph.microsoft.com/v1.0/users?$filter=startsWith(displayName,'${q}') or startsWith(mail,'${q}') or startsWith(userPrincipalName,'${q}')&$select=displayName,mail,userPrincipalName,jobTitle,department&$top=10`;
     const res = await fetch(url, { headers: { Authorization: `Bearer ${tokenResult.token}` } });
     if (!res.ok) {
@@ -549,7 +551,7 @@ export async function findUser(
       jobTitle: u.jobTitle ?? undefined,
       department: u.department ?? undefined,
     }));
-    console.log(`[Graph] findUser "${params.query}" → ${users.length} result(s)`);
+    console.debug(`[Graph] findUser → ${users.length} result(s)`);
     return { success: true, users };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);

@@ -7,9 +7,8 @@
 // Uses the same tool set as text chat, with a voice-optimized prompt.
 // ---------------------------------------------------------------------------
 
-import { AzureOpenAI } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
-import { cognitiveServicesTokenProvider } from '../auth';
+import { getSharedOpenAI } from '../auth';
 import { synthesizeSpeech, isVoiceAvailable } from './speechProcessor';
 import { getActiveCall, playPromptInCall, endCall, type CassidyCall } from './callManager';
 import { getAllTools, executeTool } from '../tools/index';
@@ -144,12 +143,7 @@ export async function processUserSpeech(callId: string, userText: string): Promi
   }
 
   try {
-    const openai = new AzureOpenAI({
-      azureADTokenProvider: cognitiveServicesTokenProvider,
-      endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-      apiVersion: '2025-04-01-preview',
-      deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-    });
+    const openai = getSharedOpenAI();
 
     // Voice context has no TurnContext — only static (non-MCP) tools are available.
     // OBO-dependent MCP tools require a TurnContext and are excluded here.
@@ -239,12 +233,7 @@ export function endVoiceConversation(callId: string): { turnCount: number; durat
 // ---------------------------------------------------------------------------
 
 async function composeOpeningPrompt(call: CassidyCall): Promise<string> {
-  const openai = new AzureOpenAI({
-    azureADTokenProvider: cognitiveServicesTokenProvider,
-    endpoint: process.env.AZURE_OPENAI_ENDPOINT!,
-    apiVersion: '2025-04-01-preview',
-    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-  });
+  const openai = getSharedOpenAI();
 
   const contextSummary = Object.entries(call.context)
     .map(([key, val]) => `${key}: ${JSON.stringify(val)}`)
