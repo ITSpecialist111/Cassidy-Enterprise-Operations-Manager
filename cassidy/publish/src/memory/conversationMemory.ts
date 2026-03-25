@@ -48,11 +48,12 @@ export async function saveHistory(conversationId: string, history: HistoryMessag
       updatedAt: new Date().toISOString(),
     });
   } catch (err: unknown) {
+    // Never let storage failures crash the user's turn — log and continue
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('AuthorizationFailure') || msg.includes('This request is not authorized')) {
       console.warn('[ConversationMemory] Azure Table Storage authorization failed; continuing without persisted history');
-      return;
+    } else {
+      console.warn('[ConversationMemory] Failed to save history (non-blocking):', msg);
     }
-    throw err;
   }
 }

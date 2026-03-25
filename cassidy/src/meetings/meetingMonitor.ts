@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { getGraphToken, getSharedOpenAI } from '../auth';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat';
 import {
   startMeetingSession,
   endMeetingSession,
@@ -340,7 +341,7 @@ Respond to what was asked. Be brief and meeting-appropriate.`,
 
     // If tools were called, execute them and get a final response
     if (choice.message.tool_calls?.length) {
-      const extendedMessages = [...messages, choice.message as any];
+      const extendedMessages: ChatCompletionMessageParam[] = [...messages, choice.message];
 
       const toolResults = await Promise.all(
         choice.message.tool_calls.map(async (toolCall) => {

@@ -104,9 +104,14 @@ describe('proactiveEngine', () => {
         partitionKey: 'users',
         rowKey: 'user-1',
         displayName: 'Alice Smith',
+        email: 'alice@example.com',
         conversationRef: '{}',
         notificationPrefs: '{}',
         timezone: 'UTC',
+        preferredChannel: 'teams_chat' as const,
+        lastInteraction: new Date().toISOString(),
+        firstInteraction: new Date().toISOString(),
+        interactionCount: 5,
       };
       const action = {
         targetUserId: 'user-1',
@@ -117,7 +122,7 @@ describe('proactiveEngine', () => {
         context: { overdueCount: 3 },
       };
 
-      const message = await composeProactiveMessage(action, user as any);
+      const message = await composeProactiveMessage(action, user);
       expect(typeof message).toBe('string');
       expect(message.length).toBeGreaterThan(0);
     });

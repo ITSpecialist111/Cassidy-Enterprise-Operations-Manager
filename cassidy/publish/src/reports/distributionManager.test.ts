@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the tableStorage module before importing distributionManager
 vi.mock('../memory/tableStorage', () => {
-  const store = new Map<string, any>();
+  const store = new Map<string, Record<string, unknown>>();
   return {
-    upsertEntity: vi.fn(async (_table: string, entity: any) => {
+    upsertEntity: vi.fn(async (_table: string, entity: Record<string, unknown>) => {
       store.set(`${entity.partitionKey}:${entity.rowKey}`, entity);
     }),
     getEntity: vi.fn(async (_table: string, pk: string, rk: string) => {
@@ -33,7 +33,7 @@ import {
 
 // Access the mock store for cleanup
 import * as tableStorage from '../memory/tableStorage';
-const store = (tableStorage as any).__store as Map<string, any>;
+const store = (tableStorage as unknown as { __store: Map<string, Record<string, unknown>> }).__store;
 
 describe('distributionManager', () => {
   beforeEach(() => {

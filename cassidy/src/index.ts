@@ -15,8 +15,8 @@ import {
 import express, { Response } from 'express';
 import { agentApplication, credential, runAutonomousStandup } from './agent';
 import { setAdapter } from './scheduler/proactiveNotifier';
-import { initAutonomousLoop } from './autonomous/autonomousLoop';
-import { initProactiveEngine, triggerSpecific } from './proactive/proactiveEngine';
+import { initAutonomousLoop, stopAutonomousLoop } from './autonomous/autonomousLoop';
+import { initProactiveEngine, stopProactiveEngine, triggerSpecific } from './proactive/proactiveEngine';
 import { getAllConversationRefs } from './proactive/userRegistry';
 import { handleTranscriptWebhook, postToMeetingChat } from './meetings/meetingMonitor';
 import { handleCallNotification, getActiveCall } from './voice/callManager';
@@ -207,7 +207,7 @@ const port = Number(process.env.PORT) || 3978;
 // CRITICAL: bind to 0.0.0.0 in production — not localhost — for Azure App Service
 const host = process.env.HOST ?? (isDevelopment ? 'localhost' : '0.0.0.0');
 
-server.listen(port, host, () => {
+const httpServer = server.listen(port, host, () => {
   console.log(`\nCassidy (Operations Manager) listening on ${host}:${port}`);
   console.log(`Health check: http://${host}:${port}/api/health`);
 
@@ -243,3 +243,18 @@ server.listen(port, host, () => {
   console.error(err);
   process.exit(1);
 });
+
+// Graceful shutdown — stop background loops before process exits
+function gracefulShutdown(signal: string) {
+  console.log(`[Cassidy] ${signal} received — shutting down gracefully`);
+  stopAutonomousLoop();
+  stopProactiveEngine();
+  httpServer.close(() => {
+    console.log('[Cassidy] HTTP server closed');
+    process.exit(0);
+  });
+  // Force exit after 10s if server.close hangs
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

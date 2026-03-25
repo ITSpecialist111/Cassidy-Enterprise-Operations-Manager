@@ -269,12 +269,16 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           }
           try {
             const params = JSON.parse(toolCall.function.arguments || '{}');
-            const result = await Promise.race([
-              executeTool(toolCall.function.name, params, context),
-              new Promise<string>((_, reject) =>
-                setTimeout(() => reject(new Error(`Tool timeout after ${TOOL_EXEC_TIMEOUT_MS / 1000}s`)), TOOL_EXEC_TIMEOUT_MS)
-              ),
-            ]);
+            // Safe timeout: clearTimeout on settle prevents dangling rejection
+            const result = await new Promise<string>((resolve, reject) => {
+              let settled = false;
+              const timer = setTimeout(() => {
+                if (!settled) { settled = true; reject(new Error(`Tool timeout after ${TOOL_EXEC_TIMEOUT_MS / 1000}s`)); }
+              }, TOOL_EXEC_TIMEOUT_MS);
+              executeTool(toolCall.function.name, params, context)
+                .then(r => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } })
+                .catch(e => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } });
+            });
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: result };
           } catch (parseErr) {
             const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
