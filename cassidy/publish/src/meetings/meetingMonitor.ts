@@ -210,8 +210,9 @@ export async function handleTranscriptWebhook(
 
       // Detect action items (simple heuristic)
       if (detectActionItemPhrase(segment.text)) {
+        const actionDesc = extractActionDescription(segment.text);
         addActionItem(meetingId, {
-          description: segment.text,
+          description: actionDesc,
           source: segment.speaker,
           detectedAt: segment.timestamp,
         });
@@ -418,6 +419,14 @@ export async function postToMeetingChat(chatId: string, message: string): Promis
 // ---------------------------------------------------------------------------
 // Simple heuristic detectors
 // ---------------------------------------------------------------------------
+
+function extractActionDescription(text: string): string {
+  // Extract just the action verb + object from a longer statement
+  const actionMatch = text.match(
+    /(?:please|can you|could you|i'll|i will|we should|we need to|let's)\s+([^.!?]+)/i
+  );
+  return actionMatch?.[1]?.trim() ?? text.slice(0, 150);
+}
 
 function detectActionItemPhrase(text: string): boolean {
   const patterns = [

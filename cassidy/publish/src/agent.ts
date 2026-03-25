@@ -51,7 +51,13 @@ const openai = new AzureOpenAI({
   endpoint: process.env.AZURE_OPENAI_ENDPOINT || 'https://placeholder.openai.azure.com',
   apiVersion: '2025-04-01-preview',
   deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
+  timeout: 120_000,  // 120s hard timeout — GPT-5 reasoning can be slow
+  maxRetries: 1,
 });
+
+// Per-call timeout for OpenAI requests (AbortController)
+const OPENAI_CALL_TIMEOUT_MS = 90_000; // 90s per iteration
+const TOOL_EXEC_TIMEOUT_MS = 30_000;   // 30s per tool call
 
 function parseAgenticScopes(): string[] {
   const raw =
@@ -212,14 +218,29 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     const maxIterations = 10;
 
     for (let i = 0; i < maxIterations; i++) {
-      const response = await openai.chat.completions.create({
-        model: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
-        messages,
-        tools: mergedTools,
-        tool_choice: 'auto',
-        max_completion_tokens: 4000,
-        // No temperature — GPT-5 reasoning models only support the default
-      });
+      let response;
+      try {
+        const controller = new AbortController();
+        const timeoutHandle = setTimeout(() => controller.abort(), OPENAI_CALL_TIMEOUT_MS);
+        response = await openai.chat.completions.create(
+          {
+            model: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
+            messages,
+            tools: mergedTools,
+            tool_choice: 'auto',
+            max_completion_tokens: 4000,
+          },
+          { signal: controller.signal },
+        );
+        clearTimeout(timeoutHandle);
+      } catch (apiErr) {
+        if (apiErr instanceof Error && (apiErr.name === 'AbortError' || apiErr.message.includes('abort'))) {
+          console.error(`[Cassidy] OpenAI API timeout after ${OPENAI_CALL_TIMEOUT_MS / 1000}s on iteration ${i}`);
+          reply = `⏱️ I'm taking longer than expected to work through this. Let me try a simpler approach — could you ask a more specific question?`;
+          break;
+        }
+        throw apiErr;
+      }
 
       const choice = response.choices[0];
       messages.push(choice.message as ChatCompletionMessageParam);
@@ -238,7 +259,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
         break;
       }
 
-      // Execute all tool calls in parallel, thread context for OBO auth
+      // Execute all tool calls in parallel with per-tool timeout, thread context for OBO auth
       const toolResults = await Promise.all(
         choice.message.tool_calls.map(async (toolCall) => {
           if (toolCall.type !== 'function') {
@@ -246,7 +267,12 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           }
           try {
             const params = JSON.parse(toolCall.function.arguments || '{}');
-            const result = await executeTool(toolCall.function.name, params, context);
+            const result = await Promise.race([
+              executeTool(toolCall.function.name, params, context),
+              new Promise<string>((_, reject) =>
+                setTimeout(() => reject(new Error(`Tool timeout after ${TOOL_EXEC_TIMEOUT_MS / 1000}s`)), TOOL_EXEC_TIMEOUT_MS)
+              ),
+            ]);
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: result };
           } catch (parseErr) {
             const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);

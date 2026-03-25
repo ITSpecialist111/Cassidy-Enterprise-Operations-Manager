@@ -225,6 +225,8 @@ export async function invokeAgent(
       },
     };
 
+    const agentController = new AbortController();
+    const agentTimeout = setTimeout(() => agentController.abort(), 30_000);
     const res = await fetch(agent.endpoint, {
       method: 'POST',
       headers: {
@@ -233,7 +235,9 @@ export async function invokeAgent(
         'X-Correlation-Id': `cassidy_${Date.now()}`,
       },
       body: JSON.stringify(payload),
+      signal: agentController.signal,
     });
+    clearTimeout(agentTimeout);
 
     const durationMs = Date.now() - startTime;
 

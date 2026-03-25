@@ -166,13 +166,29 @@ Do not ask questions — make reasonable decisions and proceed.`;
   let result = '';
 
   for (let i = 0; i < 5; i++) {
-    const response = await openai.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-      messages,
-      tools,
-      tool_choice: 'auto',
-      max_completion_tokens: 2000,
-    });
+    let response;
+    try {
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), 60_000);
+      response = await openai.chat.completions.create(
+        {
+          model: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
+          messages,
+          tools,
+          tool_choice: 'auto',
+          max_completion_tokens: 2000,
+        },
+        { signal: controller.signal },
+      );
+      clearTimeout(timeoutHandle);
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'AbortError' || err.message.includes('abort'))) {
+        console.error(`[AutonomousLoop] Subtask OpenAI timeout on iteration ${i}`);
+        result = 'Subtask timed out during reasoning — partial progress may have been made.';
+        break;
+      }
+      throw err;
+    }
 
     const choice = response.choices[0];
     messages.push(choice.message as ChatCompletionMessageParam);

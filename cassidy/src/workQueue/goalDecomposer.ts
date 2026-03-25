@@ -39,14 +39,20 @@ Format:
 export async function decomposeGoal(goal: string): Promise<Subtask[]> {
   const openai = getOpenAI();
   try {
-    const response = await openai.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
-      messages: [
-        { role: 'system', content: DECOMPOSE_PROMPT },
-        { role: 'user', content: goal },
-      ],
-      max_completion_tokens: 1000,
-    });
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), 30_000);
+    const response = await openai.chat.completions.create(
+      {
+        model: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
+        messages: [
+          { role: 'system', content: DECOMPOSE_PROMPT },
+          { role: 'user', content: goal },
+        ],
+        max_completion_tokens: 1000,
+      },
+      { signal: controller.signal },
+    );
+    clearTimeout(timeoutHandle);
 
     const raw = response.choices[0]?.message?.content?.trim() ?? '[]';
     // Strip markdown code fences if present

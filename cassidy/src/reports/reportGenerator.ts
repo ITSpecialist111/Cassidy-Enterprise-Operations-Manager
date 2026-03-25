@@ -26,6 +26,11 @@ import {
   formatForTeams,
 } from '../tools/index';
 import { invokeMcpTool, hasMcpToolServer } from '../tools/mcpToolSetup';
+import {
+  getOperationalRiskScore,
+  getActivePredictions,
+  runPredictionCycle,
+} from '../intelligence/predictiveEngine';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,7 +59,7 @@ export interface DistributeResult {
 // Data source dispatcher
 // ---------------------------------------------------------------------------
 
-function gatherSectionData(section: ReportSection): unknown {
+async function gatherSectionData(section: ReportSection): Promise<unknown> {
   const { dataSource, dataParams } = section;
 
   switch (dataSource) {
@@ -74,6 +79,12 @@ function gatherSectionData(section: ReportSection): unknown {
       if (!params.period) params.period = new Date().toISOString().slice(0, 7); // YYYY-MM
       return generateProjectStatusReport(params);
     }
+    case 'getOperationalRiskScore':
+      return await getOperationalRiskScore();
+    case 'getActivePredictions':
+      return await getActivePredictions();
+    case 'runPredictionCycle':
+      return await runPredictionCycle();
     default:
       return { error: `Unknown data source: ${dataSource}` };
   }
@@ -240,7 +251,7 @@ export async function generateReport(
     }
 
     try {
-      const data = gatherSectionData(sectionWithParams);
+      const data = await gatherSectionData(sectionWithParams);
       const narrative = await composeNarrative(sectionWithParams, data);
       sectionContents.push(`## ${section.title}\n\n${narrative}`);
     } catch (err) {

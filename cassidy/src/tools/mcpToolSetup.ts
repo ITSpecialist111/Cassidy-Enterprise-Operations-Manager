@@ -248,6 +248,8 @@ async function buildToolDefinitions(context?: TurnContext): Promise<ChatCompleti
 // Invoke an MCP tool by name using StreamableHTTP transport
 // ---------------------------------------------------------------------------
 
+const MCP_TOOL_TIMEOUT_MS = 30_000; // 30s per MCP tool call
+
 export async function invokeMcpTool(toolName: string, params: Record<string, unknown>): Promise<unknown> {
   const serverConfig = _toolServerMap.get(toolName);
   if (!serverConfig) {
@@ -261,7 +263,12 @@ export async function invokeMcpTool(toolName: string, params: Record<string, unk
 
   try {
     await client.connect(transport);
-    const result = await client.callTool({ name: toolName, arguments: params });
+    const result = await Promise.race([
+      client.callTool({ name: toolName, arguments: params }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`[MCP] Tool "${toolName}" timeout after ${MCP_TOOL_TIMEOUT_MS / 1000}s`)), MCP_TOOL_TIMEOUT_MS)
+      ),
+    ]);
     return result;
   } finally {
     try { await client.close(); } catch { /* ignore */ }
