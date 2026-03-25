@@ -33,6 +33,8 @@ The previous `AuthorizationFailure` crash path has been fixed in production. Cas
 | 2 | Morning brief (`Show me the morning brief`) | ✅ PASS | Cassidy returned full brief at 5:56 AM with priorities, approvals, workload, and actions. |
 | 3 | Storage auth failure behavior | ✅ PASS | Table auth failures now logged as warnings, not surfaced as fatal user errors. |
 | 4 | Complex planning / decomposition (`plan the customer summit for Q3`) | ⚠️ DEGRADED | Request remained in `Cassidy is typing` state beyond a reasonable demo window with no final response. |
+| 5 | Task prioritization prompt (`Show me the tasks in priority order`) | ✅ PARTIAL | Cassidy quickly asked a sensible clarification question about scope and filter. |
+| 6 | Clarified prioritization (`Operations team, all open tasks`) | ⚠️ DEGRADED | After clarification, Cassidy remained in typing state and did not return the ranked task list within a reasonable demo window. |
 
 ---
 
@@ -68,7 +70,12 @@ The previous `AuthorizationFailure` crash path has been fixed in production. Cas
    - Impact: Demo reliability is poor for autonomous planning scenarios.
    - Action: Inspect long-running GPT/tool loop behavior, timeouts, and whether missing MCP auth is causing stalled planning flows.
 
-7. **Risk dashboard data source unavailable**
+7. **Second-turn operational retrieval can stall after clarification**
+   - Symptom: Cassidy can ask a good clarification question for ranked task requests, but the follow-up retrieval may hang.
+   - Impact: Multi-turn operational retrieval is less reliable than single-turn summaries.
+   - Action: Inspect the post-clarification path for task ranking and determine whether it depends on unavailable live MCP connectors or slow tool loops.
+
+8. **Risk dashboard data source unavailable**
    - Symptom: Morning brief explicitly reports that operational risk score and predictions are temporarily unavailable due to a data source error.
    - Impact: Predictive/risk intelligence is degraded.
    - Action: Trace the risk dashboard connector/data source and restore it.
@@ -88,6 +95,9 @@ The previous `AuthorizationFailure` crash path has been fixed in production. Cas
 
 4. **Useful fallback behavior for calendar requests**
    - Cassidy explains connector limitations and asks clarifying follow-up questions instead of crashing.
+
+5. **First-turn clarification quality is good**
+   - For prioritization requests, Cassidy asks relevant scope/filter questions instead of guessing.
 
 ---
 
