@@ -238,22 +238,22 @@ export async function executeTool(
     switch (name) {
       // Operations tools
       case 'getOverdueTasks':
-        result = getOverdueTasks(params as Parameters<typeof getOverdueTasks>[0]);
+        result = await getOverdueTasks(params as Parameters<typeof getOverdueTasks>[0]);
         break;
       case 'getTeamWorkload':
-        result = getTeamWorkload(params as Parameters<typeof getTeamWorkload>[0]);
+        result = await getTeamWorkload(params as Parameters<typeof getTeamWorkload>[0]);
         break;
       case 'prioritizeBacklog':
         result = prioritizeBacklog(params as Parameters<typeof prioritizeBacklog>[0]);
         break;
       case 'getPendingApprovals':
-        result = getPendingApprovals(params as Parameters<typeof getPendingApprovals>[0]);
+        result = await getPendingApprovals(params as Parameters<typeof getPendingApprovals>[0]);
         break;
       case 'generateStandupReport':
-        result = generateStandupReport(params as Parameters<typeof generateStandupReport>[0]);
+        result = await generateStandupReport(params as Parameters<typeof generateStandupReport>[0]);
         break;
       case 'generateProjectStatusReport':
-        result = generateProjectStatusReport(params as Parameters<typeof generateProjectStatusReport>[0]);
+        result = await generateProjectStatusReport(params as Parameters<typeof generateProjectStatusReport>[0]);
         break;
 
       // Format tools
@@ -594,7 +594,7 @@ export async function executeAutonomousStandup(): Promise<StandupSummary> {
   console.log(`[Cassidy] Starting autonomous standup for ${localDate}`);
 
   // Step 1 — Generate standup content
-  const standupMarkdown = generateStandupReport({ date: localDate, include_blockers: true });
+  const standupMarkdown = await generateStandupReport({ date: localDate, include_blockers: true });
   actionsCompleted.push(`Generated standup report for ${localDate}`);
 
   // Step 2 — Format for Teams
@@ -614,8 +614,8 @@ export async function executeAutonomousStandup(): Promise<StandupSummary> {
   );
 
   // Step 4 — Email manager with headline summary
-  const overdue = getOverdueTasks({ include_at_risk: false });
-  const approvals = getPendingApprovals({ older_than_days: 2 });
+  const overdue = await getOverdueTasks({ include_at_risk: false });
+  const approvals = await getPendingApprovals({ older_than_days: 2 });
   const managerEmail = appConfig.managerEmail;
 
   const emailBody = [

@@ -2,24 +2,12 @@
 // Licensed under the MIT License.
 
 import type { ChatCompletionTool } from 'openai/resources/chat';
+import { getGraphToken } from '../auth';
+import { config as appConfig } from '../featureConfig';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function statusEmoji(status: string): string {
-  switch (status.toLowerCase()) {
-    case 'overdue': return '🔴';
-    case 'at_risk':
-    case 'at risk': return '🟡';
-    case 'on_track':
-    case 'on track':
-    case 'complete':
-    case 'completed': return '🟢';
-    case 'blocked': return '🔵';
-    default: return '⚪';
-  }
-}
 
 function daysUntil(dateStr: string): number {
   const due = new Date(dateStr);
@@ -37,14 +25,95 @@ function taskStatus(dueDate?: string, completed?: boolean): string {
 }
 
 // ---------------------------------------------------------------------------
-// Mock data — used when MCP is not available (demo / local dev)
-// ⚠️ All functions below return DEMO DATA with fictional names.
-// When live MCP tools are connected, GPT-5 prefers those instead.
+// Graph API helper with timeout
+// ---------------------------------------------------------------------------
+
+const GRAPH_TIMEOUT_MS = 10_000;
+
+async function graphGet<T>(path: string): Promise<T> {
+  const token = await getGraphToken();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), GRAPH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`Graph ${res.status}: ${res.statusText}`);
+    return await res.json() as T;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Short-lived cache (60s TTL) — avoids repeat Graph calls during standup
+// generation which calls getOverdueTasks, getTeamWorkload, getPendingApprovals
+// ---------------------------------------------------------------------------
+
+interface CacheEntry<T> { data: T; expiresAt: number }
+const cache = new Map<string, CacheEntry<unknown>>();
+const CACHE_TTL_MS = 60_000;
+
+function getCached<T>(key: string): T | undefined {
+  const entry = cache.get(key);
+  if (!entry || Date.now() > entry.expiresAt) { cache.delete(key); return undefined; }
+  return entry.data as T;
+}
+
+function setCache<T>(key: string, data: T): void {
+  cache.set(key, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+// ---------------------------------------------------------------------------
+// Graph data types
+// ---------------------------------------------------------------------------
+
+interface PlannerTask {
+  id: string;
+  title: string;
+  percentComplete: number;
+  dueDateTime?: string;
+  createdDateTime: string;
+  assignments: Record<string, { assignedBy?: { user?: { displayName?: string } } }>;
+  bucketId?: string;
+  appliedCategories?: Record<string, boolean>;
+}
+
+interface GroupMember {
+  id: string;
+  displayName: string;
+  jobTitle?: string;
+  mail?: string;
+}
+
+interface PlannerBucket {
+  id: string;
+  name: string;
+  planId: string;
+}
+
+// ---------------------------------------------------------------------------
+// Internal normalised task type
+// ---------------------------------------------------------------------------
+
+interface NormalisedTask {
+  id: string;
+  title: string;
+  dueDate: string;
+  owner: string;
+  project: string;
+  completed: boolean;
+  blocked: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Fallback mock data — used when Graph is unavailable
 // ---------------------------------------------------------------------------
 
 const DEMO_DATA_NOTICE = '⚠️ This data is for demonstration purposes only — names and tasks are fictional. Connect MCP tools for live data.';
 
-const MOCK_TASKS = [
+const MOCK_TASKS: NormalisedTask[] = [
   { id: 'task-001', title: 'Vendor contract renewal — IT security review',     dueDate: '2026-03-15', owner: 'Alex Kumar',     project: 'IT Procurement',       completed: false, blocked: false },
   { id: 'task-002', title: 'Q1 OKR sign-off from department heads',            dueDate: '2026-03-18', owner: 'Sarah Chen',     project: 'Q1 Planning',          completed: false, blocked: false },
   { id: 'task-003', title: 'Onboarding checklist — Jordan Lee (starts Mon)',   dueDate: '2026-03-17', owner: 'Pat Rivera',     project: 'HR Operations',        completed: false, blocked: true  },
@@ -61,13 +130,96 @@ const MOCK_APPROVALS = [
   { id: 'apr-003', title: 'New vendor add — DevToolbox SaaS subscription',  requestor: 'Pat Rivera',    approver: 'Sarah Chen',    submittedDaysAgo: 1, urgency: 'low'    },
 ];
 
-const MOCK_TEAM = [
+const MOCK_TEAM: Array<{ name: string; role: string; activeTasks: number; overdueCount: number; capacity: string }> = [
   { name: 'Alex Kumar',    role: 'Senior Analyst',       activeTasks: 6, overdueCount: 2, capacity: 'near_limit' },
   { name: 'Sarah Chen',    role: 'Operations Lead',      activeTasks: 4, overdueCount: 1, capacity: 'normal'     },
   { name: 'Pat Rivera',    role: 'Project Coordinator',  activeTasks: 3, overdueCount: 0, capacity: 'normal'     },
   { name: 'Morgan Taylor', role: 'IT Operations',        activeTasks: 7, overdueCount: 2, capacity: 'near_limit' },
   { name: 'Sam Okafor',    role: 'Security & Compliance',activeTasks: 5, overdueCount: 1, capacity: 'normal'     },
 ];
+
+// ---------------------------------------------------------------------------
+// Graph → normalised task fetcher
+// ---------------------------------------------------------------------------
+
+/** Resolve user IDs to display names. Builds a Map<userId, displayName>. */
+async function resolveMembers(): Promise<Map<string, GroupMember>> {
+  const groupId = appConfig.plannerGroupId;
+  if (!groupId) return new Map();
+
+  const cacheKey = `members_${groupId}`;
+  const cached = getCached<Map<string, GroupMember>>(cacheKey);
+  if (cached) return cached;
+
+  const data = await graphGet<{ value: GroupMember[] }>(`/groups/${groupId}/members?$select=id,displayName,jobTitle,mail`);
+  const map = new Map<string, GroupMember>();
+  for (const m of data.value) map.set(m.id, m);
+  setCache(cacheKey, map);
+  return map;
+}
+
+/** Fetch buckets for the configured plan. Returns Map<bucketId, bucketName>. */
+async function fetchBuckets(): Promise<Map<string, string>> {
+  const planId = appConfig.plannerPlanId;
+  if (!planId) return new Map();
+
+  const cacheKey = `buckets_${planId}`;
+  const cached = getCached<Map<string, string>>(cacheKey);
+  if (cached) return cached;
+
+  const data = await graphGet<{ value: PlannerBucket[] }>(`/planner/plans/${planId}/buckets`);
+  const map = new Map<string, string>();
+  for (const b of data.value) map.set(b.id, b.name);
+  setCache(cacheKey, map);
+  return map;
+}
+
+/** Fetch all Planner tasks for the configured plan and normalise. */
+async function fetchPlannerTasks(): Promise<NormalisedTask[]> {
+  const planId = appConfig.plannerPlanId;
+  if (!planId) throw new Error('PLANNER_PLAN_ID not configured');
+
+  const cacheKey = `tasks_${planId}`;
+  const cached = getCached<NormalisedTask[]>(cacheKey);
+  if (cached) return cached;
+
+  const [taskData, members, buckets] = await Promise.all([
+    graphGet<{ value: PlannerTask[] }>(`/planner/plans/${planId}/tasks?$top=100`),
+    resolveMembers(),
+    fetchBuckets(),
+  ]);
+
+  const tasks: NormalisedTask[] = taskData.value.map(t => {
+    // Resolve owner from first assignment
+    const assigneeIds = Object.keys(t.assignments ?? {});
+    const firstAssignee = assigneeIds.length > 0 ? members.get(assigneeIds[0]) : undefined;
+    const ownerName = firstAssignee?.displayName ?? 'Unassigned';
+
+    // Bucket name → project name
+    const project = (t.bucketId && buckets.get(t.bucketId)) || 'General';
+
+    // Planner: "blocked" indicated by category6 (red label) by convention
+    const blocked = Boolean(t.appliedCategories?.category6);
+
+    return {
+      id: t.id,
+      title: t.title,
+      dueDate: t.dueDateTime ? t.dueDateTime.slice(0, 10) : '',
+      owner: ownerName,
+      project,
+      completed: t.percentComplete === 100,
+      blocked,
+    };
+  });
+
+  setCache(cacheKey, tasks);
+  return tasks;
+}
+
+/** True when Graph-backed Planner data is available. */
+function graphConfigured(): boolean {
+  return Boolean(appConfig.plannerGroupId && appConfig.plannerPlanId);
+}
 
 // ---------------------------------------------------------------------------
 // 1. getOverdueTasks
@@ -87,12 +239,28 @@ export interface OverdueTaskResult {
   }>;
   blockedCount: number;
   criticalCount: number;
-  notice: string;
+  notice?: string;
+  source: 'graph' | 'demo';
 }
 
-export function getOverdueTasks(params: { project?: string; assignee?: string; include_at_risk?: boolean }): OverdueTaskResult {
+export async function getOverdueTasks(params: { project?: string; assignee?: string; include_at_risk?: boolean }): Promise<OverdueTaskResult> {
+  let allTasks: NormalisedTask[];
+  let source: 'graph' | 'demo' = 'demo';
+
+  if (graphConfigured()) {
+    try {
+      allTasks = await fetchPlannerTasks();
+      source = 'graph';
+    } catch (err) {
+      console.warn('[OpsTools] Graph Planner fetch failed, falling back to demo data:', err);
+      allTasks = MOCK_TASKS;
+    }
+  } else {
+    allTasks = MOCK_TASKS;
+  }
+
   const now = new Date();
-  let tasks = MOCK_TASKS.filter(t => !t.completed);
+  let tasks = allTasks.filter(t => !t.completed);
 
   if (params.project) {
     tasks = tasks.filter(t => t.project.toLowerCase().includes(params.project!.toLowerCase()));
@@ -102,8 +270,8 @@ export function getOverdueTasks(params: { project?: string; assignee?: string; i
   }
 
   const overdue = tasks.filter(t => {
-    const due = new Date(t.dueDate);
-    const daysLeft = Math.floor((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    if (!t.dueDate) return false;
+    const daysLeft = Math.floor((new Date(t.dueDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
     return params.include_at_risk ? daysLeft <= 2 : daysLeft < 0;
   });
 
@@ -127,7 +295,8 @@ export function getOverdueTasks(params: { project?: string; assignee?: string; i
     tasks: result,
     blockedCount: result.filter(t => t.blocked).length,
     criticalCount: result.filter(t => t.daysOverdue > 3).length,
-    notice: DEMO_DATA_NOTICE,
+    source,
+    ...(source === 'demo' ? { notice: DEMO_DATA_NOTICE } : {}),
   };
 }
 
@@ -148,12 +317,62 @@ export interface TeamWorkloadResult {
   totalActiveTasks: number;
   totalOverdue: number;
   atCapacityCount: number;
-  notice: string;
+  notice?: string;
+  source: 'graph' | 'demo';
 }
 
-export function getTeamWorkload(params: { team_name?: string }): TeamWorkloadResult {
+export async function getTeamWorkload(params: { team_name?: string }): Promise<TeamWorkloadResult> {
   const teamName = params.team_name ?? process.env.DEFAULT_TEAM_NAME ?? 'Operations';
 
+  if (graphConfigured()) {
+    try {
+      const [allTasks, memberMap] = await Promise.all([
+        fetchPlannerTasks(),
+        resolveMembers(),
+      ]);
+
+      const now = new Date();
+      const activeTasks = allTasks.filter(t => !t.completed);
+
+      // Build member workload from real data
+      const memberStats = new Map<string, { name: string; role: string; active: number; overdue: number }>();
+      for (const m of memberMap.values()) {
+        memberStats.set(m.displayName, { name: m.displayName, role: m.jobTitle ?? 'Team Member', active: 0, overdue: 0 });
+      }
+      for (const t of activeTasks) {
+        const stat = memberStats.get(t.owner);
+        if (stat) {
+          stat.active++;
+          if (t.dueDate && new Date(t.dueDate) < now) stat.overdue++;
+        }
+      }
+
+      const members = Array.from(memberStats.values()).map(s => {
+        const capacity = s.active >= 8 ? 'over_limit' : s.active >= 5 ? 'near_limit' : 'normal';
+        return {
+          name: s.name,
+          role: s.role,
+          activeTasks: s.active,
+          overdueCount: s.overdue,
+          capacity,
+          capacityEmoji: capacity === 'over_limit' ? '🔴' : capacity === 'near_limit' ? '🟡' : '🟢',
+        };
+      });
+
+      return {
+        team: teamName,
+        members,
+        totalActiveTasks: members.reduce((sum, m) => sum + m.activeTasks, 0),
+        totalOverdue: members.reduce((sum, m) => sum + m.overdueCount, 0),
+        atCapacityCount: members.filter(m => m.capacity !== 'normal').length,
+        source: 'graph',
+      };
+    } catch (err) {
+      console.warn('[OpsTools] Graph team workload failed, falling back to demo data:', err);
+    }
+  }
+
+  // Fallback to mock data
   const members = MOCK_TEAM.map(m => ({
     ...m,
     capacityEmoji: m.capacity === 'near_limit' ? '🟡' : m.capacity === 'over_limit' ? '🔴' : '🟢',
@@ -166,6 +385,7 @@ export function getTeamWorkload(params: { team_name?: string }): TeamWorkloadRes
     totalOverdue: members.reduce((sum, m) => sum + m.overdueCount, 0),
     atCapacityCount: members.filter(m => m.capacity !== 'normal').length,
     notice: DEMO_DATA_NOTICE,
+    source: 'demo',
   };
 }
 
@@ -250,10 +470,74 @@ export interface PendingApprovalsResult {
   }>;
   overdueCount: number;
   highUrgencyCount: number;
-  notice: string;
+  notice?: string;
+  source: 'graph' | 'demo';
 }
 
-export function getPendingApprovals(params: { older_than_days?: number; approver?: string }): PendingApprovalsResult {
+export async function getPendingApprovals(params: { older_than_days?: number; approver?: string }): Promise<PendingApprovalsResult> {
+  // Graph Planner doesn't have a native "approvals" concept. We model
+  // approvals as tasks in a bucket named "Approvals" or "Pending Approval".
+  // If Graph is configured, we query Planner and extract those.
+  if (graphConfigured()) {
+    try {
+      const [allTasks, buckets, members] = await Promise.all([
+        fetchPlannerTasks(),
+        fetchBuckets(),
+        resolveMembers(),
+      ]);
+
+      // Find the approval bucket (case-insensitive, matches "Approvals", "Pending Approval", etc.)
+      let approvalBucketName = '';
+      const planId = appConfig.plannerPlanId;
+      const rawBuckets = getCached<Map<string, string>>(`buckets_${planId}`) ?? buckets;
+      for (const [, name] of rawBuckets) {
+        if (/approval/i.test(name)) { approvalBucketName = name; break; }
+      }
+
+      // Filter tasks that are in the approval bucket and incomplete
+      const approvalTasks = allTasks.filter(t => {
+        if (t.completed) return false;
+        return t.project.toLowerCase().includes('approval');
+      });
+
+      const now = new Date();
+      const mapped = approvalTasks.map(t => {
+        const created = t.dueDate ? new Date(t.dueDate) : now;
+        const daysAgo = Math.max(0, Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24)));
+        return {
+          id: t.id,
+          title: t.title,
+          requestor: t.owner,
+          approver: t.owner, // In Planner, the assignee handles approval
+          submittedDaysAgo: daysAgo,
+          urgency: daysAgo >= 5 ? 'high' : daysAgo >= 3 ? 'normal' : 'low',
+          urgencyEmoji: daysAgo >= 5 ? '🔴' : daysAgo >= 3 ? '🟡' : '🟢',
+          isOverdue: daysAgo >= 3,
+        };
+      });
+
+      let filtered = mapped;
+      if (params.approver) {
+        filtered = filtered.filter(a => a.approver.toLowerCase().includes(params.approver!.toLowerCase()));
+      }
+      const minAge = params.older_than_days ?? 0;
+      if (minAge > 0) {
+        filtered = filtered.filter(a => a.submittedDaysAgo >= minAge);
+      }
+
+      return {
+        total: filtered.length,
+        approvals: filtered,
+        overdueCount: filtered.filter(a => a.isOverdue).length,
+        highUrgencyCount: filtered.filter(a => a.urgency === 'high').length,
+        source: 'graph',
+      };
+    } catch (err) {
+      console.warn('[OpsTools] Graph approvals fetch failed, falling back to demo data:', err);
+    }
+  }
+
+  // Fallback to mock data
   let approvals = [...MOCK_APPROVALS];
 
   if (params.approver) {
@@ -277,6 +561,7 @@ export function getPendingApprovals(params: { older_than_days?: number; approver
     overdueCount: result.filter(a => a.isOverdue).length,
     highUrgencyCount: result.filter(a => a.urgency === 'high').length,
     notice: DEMO_DATA_NOTICE,
+    source: 'demo',
   };
 }
 
@@ -284,17 +569,19 @@ export function getPendingApprovals(params: { older_than_days?: number; approver
 // 5. generateStandupReport
 // ---------------------------------------------------------------------------
 
-export function generateStandupReport(params: { date: string; include_blockers: boolean }): string {
-  const overdue = getOverdueTasks({ include_at_risk: true });
-  const workload = getTeamWorkload({});
-  const approvals = getPendingApprovals({ older_than_days: 2 });
+export async function generateStandupReport(params: { date: string; include_blockers: boolean }): Promise<string> {
+  const [overdue, workload, approvals] = await Promise.all([
+    getOverdueTasks({ include_at_risk: true }),
+    getTeamWorkload({}),
+    getPendingApprovals({ older_than_days: 2 }),
+  ]);
 
+  const isDemo = overdue.source === 'demo';
   const lines: string[] = [
     `# 📋 Daily Operations Standup — ${params.date}`,
     `**Prepared by:** Cassidy, Operations Manager  |  **Time:** ${new Date().toUTCString()}`,
     '',
-    `> ${DEMO_DATA_NOTICE}`,
-    '',
+    ...(isDemo ? [`> ${DEMO_DATA_NOTICE}`, ''] : []),
     '---',
     '',
     '## Opening Summary',
@@ -382,10 +669,28 @@ export function generateStandupReport(params: { date: string; include_blockers: 
 // 6. generateProjectStatusReport
 // ---------------------------------------------------------------------------
 
-export function generateProjectStatusReport(params: { project_name: string; period: string }): string {
-  const projectTasks = MOCK_TASKS.filter(t =>
-    t.project.toLowerCase().includes(params.project_name.toLowerCase())
-  );
+export async function generateProjectStatusReport(params: { project_name: string; period: string }): Promise<string> {
+  let projectTasks: NormalisedTask[];
+  let isDemo = true;
+
+  if (graphConfigured()) {
+    try {
+      const all = await fetchPlannerTasks();
+      projectTasks = all.filter(t =>
+        t.project.toLowerCase().includes(params.project_name.toLowerCase())
+      );
+      isDemo = false;
+    } catch (err) {
+      console.warn('[OpsTools] Graph project status failed, using demo data:', err);
+      projectTasks = MOCK_TASKS.filter(t =>
+        t.project.toLowerCase().includes(params.project_name.toLowerCase())
+      );
+    }
+  } else {
+    projectTasks = MOCK_TASKS.filter(t =>
+      t.project.toLowerCase().includes(params.project_name.toLowerCase())
+    );
+  }
 
   if (projectTasks.length === 0) {
     return `No tasks found for project: "${params.project_name}"`;
@@ -411,8 +716,7 @@ export function generateProjectStatusReport(params: { project_name: string; peri
     `**Period:** ${params.period}  |  **Overall Status:** ${overallStatus}`,
     `**Prepared by:** Cassidy, Operations Manager  |  **Generated:** ${new Date().toUTCString()}`,
     '',
-    `> ${DEMO_DATA_NOTICE}`,
-    '',
+    ...(isDemo ? [`> ${DEMO_DATA_NOTICE}`, ''] : []),
     '---',
     '',
     '## Summary',

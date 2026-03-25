@@ -165,8 +165,8 @@ async function sendProactiveAlert(convId: string): Promise<void> {
   const ref = await getConversationReference(convId);
   if (!ref) return;
 
-  const overdue = getOverdueTasks({ include_at_risk: false });
-  const approvals = getPendingApprovals({ older_than_days: 2 });
+  const overdue = await getOverdueTasks({ include_at_risk: false });
+  const approvals = await getPendingApprovals({ older_than_days: 2 });
 
   if (overdue.total === 0 && approvals.overdueCount === 0) {
     const quietMsg = `✅ **Ops check (${new Date().toLocaleTimeString()}):** All tasks on track, no stalled approvals.`;

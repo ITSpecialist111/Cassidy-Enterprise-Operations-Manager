@@ -52,9 +52,9 @@ export async function runPredictionCycle(): Promise<Prediction[]> {
 
   try {
     // Gather current operational state
-    const overdue = getOverdueTasks({ include_at_risk: true });
-    const workload = getTeamWorkload({});
-    const approvals = getPendingApprovals({ older_than_days: 1 });
+    const overdue = await getOverdueTasks({ include_at_risk: true });
+    const workload = await getTeamWorkload({});
+    const approvals = await getPendingApprovals({ older_than_days: 1 });
 
     // Compute trend indicators
     const trendData = await computeTrends();
@@ -102,9 +102,9 @@ export async function runPredictionCycle(): Promise<Prediction[]> {
 // ---------------------------------------------------------------------------
 
 async function generatePredictions(
-  overdue: ReturnType<typeof getOverdueTasks>,
-  workload: ReturnType<typeof getTeamWorkload>,
-  approvals: ReturnType<typeof getPendingApprovals>,
+  overdue: Awaited<ReturnType<typeof getOverdueTasks>>,
+  workload: Awaited<ReturnType<typeof getTeamWorkload>>,
+  approvals: Awaited<ReturnType<typeof getPendingApprovals>>,
   trends: TrendData,
 ): Promise<Array<{
   type: string;
@@ -192,8 +192,8 @@ Respond as a JSON array of prediction objects.`,
 async function computeTrends(): Promise<TrendData> {
   // In a full implementation, we'd pull from historical data stored in
   // Table Storage. For now, compute from current operational state.
-  const overdue = getOverdueTasks({ include_at_risk: true });
-  const workload = getTeamWorkload({});
+  const overdue = await getOverdueTasks({ include_at_risk: true });
+  const workload = await getTeamWorkload({});
 
   // Risk score: weighted combination of operational health indicators
   const overdueWeight = Math.min(overdue.total * 10, 40);
@@ -206,7 +206,7 @@ async function computeTrends(): Promise<TrendData> {
 
   return {
     overdueTasksTrend: [overdue.total], // Single point — would be 7 days in production
-    approvalBacklogTrend: [getPendingApprovals({ older_than_days: 1 }).overdueCount],
+    approvalBacklogTrend: [(await getPendingApprovals({ older_than_days: 1 })).overdueCount],
     workloadDistribution: (workload.members ?? []).map((m: { name: string; activeTasks: number; capacity: string }) => ({
       member: m.name,
       tasks: m.activeTasks,

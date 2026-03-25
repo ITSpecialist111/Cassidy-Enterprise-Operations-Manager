@@ -53,6 +53,10 @@ export interface AppConfig {
   transcriptBufferSize: number;
   /** Agentic auth connection name */
   agenticConnectionName: string;
+  /** Microsoft 365 Group ID for the ops team (Planner + members) */
+  plannerGroupId: string;
+  /** Planner Plan ID within the group */
+  plannerPlanId: string;
 }
 
 function readConfig(): AppConfig {
@@ -74,6 +78,8 @@ function readConfig(): AppConfig {
     baseUrl: process.env.BASE_URL ?? '',
     transcriptBufferSize: Number(process.env.MEETING_TRANSCRIPT_BUFFER_SIZE) || 50,
     agenticConnectionName: process.env.agentic_connectionName ?? 'AgenticAuthConnection',
+    plannerGroupId: process.env.PLANNER_GROUP_ID ?? '',
+    plannerPlanId: process.env.PLANNER_PLAN_ID ?? '',
   };
 }
 

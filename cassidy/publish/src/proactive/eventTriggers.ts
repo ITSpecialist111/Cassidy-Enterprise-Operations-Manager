@@ -47,7 +47,7 @@ const overdueTaskEscalation: TriggerCondition = {
   name: 'Overdue Task Escalation',
   cooldownMinutes: 120, // 2 hours between alerts for same trigger
   evaluate: async (users: UserProfile[]): Promise<OutreachAction[]> => {
-    const overdue = getOverdueTasks({ include_at_risk: false });
+    const overdue = await getOverdueTasks({ include_at_risk: false });
     if (overdue.total === 0) return [];
 
     const actions: OutreachAction[] = [];
@@ -122,7 +122,7 @@ const stalledApproval: TriggerCondition = {
   name: 'Stalled Approval Alert',
   cooldownMinutes: 240, // 4 hours
   evaluate: async (users: UserProfile[]): Promise<OutreachAction[]> => {
-    const approvals = getPendingApprovals({ older_than_days: 3 });
+    const approvals = await getPendingApprovals({ older_than_days: 3 });
     if (approvals.overdueCount === 0) return [];
 
     const actions: OutreachAction[] = [];
@@ -170,7 +170,7 @@ const capacityWarning: TriggerCondition = {
   name: 'Team Capacity Warning',
   cooldownMinutes: 480, // 8 hours
   evaluate: async (users: UserProfile[]): Promise<OutreachAction[]> => {
-    const workload = getTeamWorkload({});
+    const workload = await getTeamWorkload({});
     const atRisk = workload.members.filter(m => m.capacity === 'near_limit');
 
     if (atRisk.length === 0) return [];
@@ -215,9 +215,9 @@ const morningBriefing: TriggerCondition = {
     const actions: OutreachAction[] = [];
 
     // Gather the day's data
-    const overdue = getOverdueTasks({ include_at_risk: true });
-    const approvals = getPendingApprovals({ older_than_days: 0 });
-    const workload = getTeamWorkload({});
+    const overdue = await getOverdueTasks({ include_at_risk: true });
+    const approvals = await getPendingApprovals({ older_than_days: 0 });
+    const workload = await getTeamWorkload({});
 
     for (const user of users) {
       const prefs = getNotificationPrefsFromProfile(user);
@@ -264,9 +264,9 @@ const weeklyDigest: TriggerCondition = {
     if (today !== 1) return []; // 1 = Monday
 
     const actions: OutreachAction[] = [];
-    const overdue = getOverdueTasks({ include_at_risk: true });
-    const approvals = getPendingApprovals({ older_than_days: 0 });
-    const workload = getTeamWorkload({});
+    const overdue = await getOverdueTasks({ include_at_risk: true });
+    const approvals = await getPendingApprovals({ older_than_days: 0 });
+    const workload = await getTeamWorkload({});
 
     for (const user of users) {
       const prefs = getNotificationPrefsFromProfile(user);
