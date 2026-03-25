@@ -199,7 +199,12 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     const liveMcpTools = await getLiveMcpToolDefinitions(context);
     const liveNames = new Set(liveMcpTools.map(t => (t as any).function?.name));
     // Keep static tools only when no live MCP equivalent exists
-    const mergedTools = [...liveMcpTools, ...staticTools.filter(t => !liveNames.has((t as any).function?.name))];
+    const MAX_TOOLS = 128;
+    let mergedTools = [...liveMcpTools, ...staticTools.filter(t => !liveNames.has((t as any).function?.name))];
+    if (mergedTools.length > MAX_TOOLS) {
+      console.warn(`[Cassidy] Trimming tools from ${mergedTools.length} to ${MAX_TOOLS} (MCP tools kept, static overflow trimmed)`);
+      mergedTools = mergedTools.slice(0, MAX_TOOLS);
+    }
     console.log(`[Cassidy] Turn tools: ${liveMcpTools.length} live MCP + ${staticTools.length} static = ${mergedTools.length} total`);
 
     // Agentic loop — GPT-5 reasons and calls tools until a final response is produced

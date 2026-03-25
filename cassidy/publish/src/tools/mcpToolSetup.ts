@@ -3,8 +3,9 @@
 
 import type { ChatCompletionTool } from 'openai/resources/chat';
 import { TurnContext } from '@microsoft/agents-hosting';
-import { McpToolServerConfigurationService } from '@microsoft/agents-a365-tooling';
+import { McpToolServerConfigurationService, Utility as ToolingUtility } from '@microsoft/agents-a365-tooling';
 import type { MCPServerConfig, McpClientTool, ToolOptions } from '@microsoft/agents-a365-tooling';
+import { AgenticAuthenticationService } from '@microsoft/agents-a365-runtime';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
@@ -17,6 +18,15 @@ const mcpService = new McpToolServerConfigurationService();
 let _serverConfigCache: MCPServerConfig[] | null = null;
 let _serverConfigExpiry = 0;
 const SERVER_CONFIG_TTL_MS = 5 * 60 * 1000; // 5 min
+
+// Only load tools from servers we explicitly configured — the gateway may return
+// additional canary/v1/preview servers we don't want.
+const CONFIGURED_SERVERS = new Set([
+  'mcp_CalendarTools',
+  'mcp_PlannerServer',
+  'mcp_MailTools',
+  'mcp_TeamsServer',
+]);
 
 let _toolDefinitionCache: ChatCompletionTool[] | null = null;
 const _toolServerMap: Map<string, MCPServerConfig> = new Map();
@@ -63,6 +73,37 @@ function normalizeServerConfig(config: MCPServerConfig, context?: TurnContext): 
   }
 
   return { ...config, headers };
+}
+
+const MCP_PLATFORM_SCOPE = 'ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default';
+
+/**
+ * Obtain OBO token for the MCP platform and build proper request headers.
+ * The tooling gateway returns server configs without auth headers — the caller
+ * (getMcpClientTools) needs these headers to authenticate to each MCP server.
+ */
+async function getOboToolHeaders(context: TurnContext): Promise<Record<string, string>> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { agentApplication } = require('../agent') as {
+      agentApplication: { authorization: import('@microsoft/agents-hosting').Authorization };
+    };
+    const token = await AgenticAuthenticationService.GetAgenticUserToken(
+      agentApplication.authorization,
+      getAuthHandlerName(),
+      context,
+      [MCP_PLATFORM_SCOPE],
+    );
+    if (!token) {
+      console.warn('[MCP] OBO token exchange returned empty token for tool headers');
+      return {};
+    }
+    return ToolingUtility.GetToolRequestHeaders(token, context, getToolOptions());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[MCP] Could not obtain OBO tool headers: ${msg}`);
+    return {};
+  }
 }
 
 async function discoverViaClientCredentials(blueprintId: string): Promise<MCPServerConfig[]> {
@@ -144,9 +185,34 @@ async function buildToolDefinitions(context?: TurnContext): Promise<ChatCompleti
   const tools: ChatCompletionTool[] = [];
   _toolServerMap.clear();
 
-  for (const config of configs) {
+  // Obtain OBO-derived auth headers to enrich each server config.
+  // The gateway returns configs without auth headers; the MCP servers need them.
+  const oboHeaders = context ? await getOboToolHeaders(context) : {};
+  if (Object.keys(oboHeaders).length > 0) {
+    console.log(`[MCP] OBO tool headers obtained: [${Object.keys(oboHeaders).join(', ')}]`);
+  } else {
+    console.warn('[MCP] No OBO tool headers available — MCP servers may reject requests');
+  }
+
+  // Filter to only our configured servers
+  const filteredConfigs = configs.filter(c => CONFIGURED_SERVERS.has(c.mcpServerName));
+  if (filteredConfigs.length < configs.length) {
+    const skipped = configs.filter(c => !CONFIGURED_SERVERS.has(c.mcpServerName)).map(c => c.mcpServerName);
+    console.log(`[MCP] Skipping unconfigured server(s): ${skipped.join(', ')}`);
+  }
+
+  for (const config of filteredConfigs) {
     try {
-      const normalizedConfig = normalizeServerConfig(config, context);
+      // Merge: OBO-derived headers as base, overlay with non-empty gateway headers
+      const mergedHeaders: Record<string, string> = { ...oboHeaders };
+      for (const [k, v] of Object.entries(config.headers ?? {})) {
+        if (v?.trim()) mergedHeaders[k] = v;
+      }
+      const enrichedConfig: MCPServerConfig = { ...config, headers: mergedHeaders };
+      const normalizedConfig = normalizeServerConfig(enrichedConfig, context);
+
+      console.log(`[MCP] Connecting to ${normalizedConfig.mcpServerName}, headers: [${Object.keys(normalizedConfig.headers ?? {}).join(', ')}]`);
+
       const mcpTools: McpClientTool[] = await mcpService.getMcpClientTools(
         normalizedConfig.mcpServerName,
         normalizedConfig,
