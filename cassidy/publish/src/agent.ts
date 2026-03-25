@@ -12,7 +12,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { DefaultAzureCredential, getBearerTokenProvider } from '@azure/identity';
 import { CASSIDY_SYSTEM_PROMPT } from './persona';
 import { getAllTools, executeTool, executeAutonomousStandup } from './tools/index';
-import { getLiveMcpToolDefinitions, invalidateMcpCache } from './tools/mcpToolSetup';
+import { getLiveMcpToolDefinitions } from './tools/mcpToolSetup';
 import { loadHistory, saveHistory } from './memory/conversationMemory';
 import { enqueueWork, createWorkItem } from './workQueue/workQueue';
 import { decomposeGoal, isComplexGoal } from './workQueue/goalDecomposer';
@@ -54,7 +54,10 @@ const openai = new AzureOpenAI({
 });
 
 function parseAgenticScopes(): string[] {
-  const raw = process.env.agentic_scopes ?? 'https://graph.microsoft.com/.default';
+  const raw =
+    process.env.connections__service_connection__settings__scopes ??
+    process.env.agentic_scopes ??
+    'https://graph.microsoft.com/.default';
   return raw
     .split(',')
     .map(scope => scope.trim())
@@ -160,9 +163,6 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   }, 4000);
 
   try {
-    // Invalidate MCP cache so this turn discovers servers with the user's fresh OBO token
-    invalidateMcpCache();
-
     // Recall relevant long-term memories and user insight to personalise the response
     const userId = context.activity.from?.id ?? '';
     let memoryContext = '';

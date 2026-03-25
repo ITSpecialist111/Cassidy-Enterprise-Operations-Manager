@@ -4,7 +4,7 @@
 import type { ChatCompletionTool } from 'openai/resources/chat';
 import { TurnContext } from '@microsoft/agents-hosting';
 import { McpToolServerConfigurationService } from '@microsoft/agents-a365-tooling';
-import type { MCPServerConfig, McpClientTool } from '@microsoft/agents-a365-tooling';
+import type { MCPServerConfig, McpClientTool, ToolOptions } from '@microsoft/agents-a365-tooling';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
@@ -29,41 +29,109 @@ function isMcpAvailable(): boolean {
   return Boolean(process.env.MCP_PLATFORM_ENDPOINT);
 }
 
+function getAuthHandlerName(): string {
+  return process.env.agentic_connectionName ?? 'AgenticAuthConnection';
+}
+
+function getToolOptions(): ToolOptions | undefined {
+  const orchestratorName = process.env.AGENTIC_ORCHESTRATOR_NAME ?? process.env.WEBSITE_SITE_NAME;
+  return orchestratorName ? { orchestratorName } : undefined;
+}
+
+function normalizeServerConfig(config: MCPServerConfig, context?: TurnContext): MCPServerConfig {
+  const tenantId =
+    context?.activity?.conversation?.tenantId ??
+    process.env.connections__service_connection__settings__tenantId ??
+    process.env.MicrosoftAppTenantId;
+
+  if (!tenantId) return config;
+
+  const headers = { ...(config.headers ?? {}) };
+  const tenantHeaderKeys = ['x-ms-tenant-id', 'x-tenant-id', 'tenant-id', 'tenantId'];
+
+  let hasTenantHeader = false;
+  for (const key of tenantHeaderKeys) {
+    if (Object.prototype.hasOwnProperty.call(headers, key)) {
+      hasTenantHeader = true;
+      const value = headers[key]?.trim();
+      if (!value) headers[key] = tenantId;
+    }
+  }
+
+  if (!hasTenantHeader) {
+    headers['x-ms-tenant-id'] = tenantId;
+  }
+
+  return { ...config, headers };
+}
+
+async function discoverViaClientCredentials(blueprintId: string): Promise<MCPServerConfig[]> {
+  if (!process.env.MicrosoftAppTenantId || !process.env.MicrosoftAppId || !process.env.MicrosoftAppPassword) {
+    return [];
+  }
+
+  const { ClientSecretCredential } = await import('@azure/identity');
+  const credential = new ClientSecretCredential(
+    process.env.MicrosoftAppTenantId,
+    process.env.MicrosoftAppId,
+    process.env.MicrosoftAppPassword,
+  );
+  const tokenResult = await credential.getToken('ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default');
+  return mcpService.listToolServers(blueprintId, tokenResult.token, getToolOptions());
+}
+
 async function getServerConfigs(context?: TurnContext): Promise<MCPServerConfig[]> {
   const now = Date.now();
   if (_serverConfigCache && now < _serverConfigExpiry) return _serverConfigCache;
 
   const blueprintId = process.env.MicrosoftAppId ?? process.env.agent_id ?? '';
+  let discovered: MCPServerConfig[] = [];
 
   try {
     if (context) {
-      // Preferred: TurnContext overload — performs OBO token exchange automatically
+      // Preferred: TurnContext overload — performs OBO token exchange automatically.
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { agentApplication } = require('../agent') as { agentApplication: { authorization: import('@microsoft/agents-hosting').Authorization } };
-      const configs = await mcpService.listToolServers(
+      discovered = await mcpService.listToolServers(
         context,
         agentApplication.authorization,
-        'AgenticAuthConnection',
+        getAuthHandlerName(),
+        undefined,
+        getToolOptions(),
       );
-      _serverConfigCache = configs;
+
+      // If OBO returns no servers, try app-only discovery as a fallback to avoid empty tool turns.
+      if (discovered.length === 0) {
+        console.warn('[MCP] OBO discovery returned 0 servers; trying app-only fallback');
+        discovered = await discoverViaClientCredentials(blueprintId);
+      }
     } else {
-      // Fallback: client credentials (app-only — may be blocked by AADSTS82001)
-      const { ClientSecretCredential } = await import('@azure/identity');
-      const credential = new ClientSecretCredential(
-        process.env.MicrosoftAppTenantId!,
-        process.env.MicrosoftAppId!,
-        process.env.MicrosoftAppPassword!,
-      );
-      const tokenResult = await credential.getToken('ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default');
-      const configs = await mcpService.listToolServers(blueprintId, tokenResult.token);
-      _serverConfigCache = configs;
+      discovered = await discoverViaClientCredentials(blueprintId);
     }
+
+    _serverConfigCache = discovered;
     _serverConfigExpiry = now + SERVER_CONFIG_TTL_MS;
     console.log(`[MCP] Discovered ${_serverConfigCache.length} server(s) from tooling gateway`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+
+    // Second chance: if the preferred path failed, try app-only discovery before giving up.
+    if (context) {
+      try {
+        const fallback = await discoverViaClientCredentials(blueprintId);
+        _serverConfigCache = fallback;
+        _serverConfigExpiry = now + SERVER_CONFIG_TTL_MS;
+        console.warn(`[MCP] Context discovery failed (${msg}). App-only fallback discovered ${fallback.length} server(s).`);
+        return _serverConfigCache;
+      } catch (fallbackErr) {
+        const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+        console.warn(`[MCP] Fallback discovery also failed: ${fallbackMsg}`);
+      }
+    }
+
     console.warn(`[MCP] Failed to discover servers: ${msg}. Tool definitions will be empty.`);
-    _serverConfigCache = [];
+    _serverConfigCache = _serverConfigCache ?? [];
+    _serverConfigExpiry = now + SERVER_CONFIG_TTL_MS;
   }
 
   return _serverConfigCache;
@@ -78,13 +146,17 @@ async function buildToolDefinitions(context?: TurnContext): Promise<ChatCompleti
 
   for (const config of configs) {
     try {
-      const mcpTools: McpClientTool[] = await mcpService.getMcpClientTools(config.mcpServerName, config);
+      const normalizedConfig = normalizeServerConfig(config, context);
+      const mcpTools: McpClientTool[] = await mcpService.getMcpClientTools(
+        normalizedConfig.mcpServerName,
+        normalizedConfig,
+      );
       for (const t of mcpTools) {
         const tool: ChatCompletionTool = {
           type: 'function',
           function: {
             name: t.name,
-            description: t.description ?? `${config.mcpServerName} tool: ${t.name}`,
+            description: t.description ?? `${normalizedConfig.mcpServerName} tool: ${t.name}`,
             parameters: {
               type: t.inputSchema.type,
               properties: t.inputSchema.properties ?? {},
@@ -93,9 +165,9 @@ async function buildToolDefinitions(context?: TurnContext): Promise<ChatCompleti
           },
         };
         tools.push(tool);
-        _toolServerMap.set(t.name, config);
+        _toolServerMap.set(t.name, normalizedConfig);
       }
-      console.log(`[MCP] Loaded ${mcpTools.length} tool(s) from ${config.mcpServerName}`);
+      console.log(`[MCP] Loaded ${mcpTools.length} tool(s) from ${normalizedConfig.mcpServerName}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[MCP] Failed to load tools from ${config.mcpServerName}: ${msg}`);
