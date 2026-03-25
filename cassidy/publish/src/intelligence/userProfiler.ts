@@ -93,6 +93,13 @@ export async function recordInteraction(
   };
 
   await upsertEntity(TABLE, insight);
+
+  // Trigger deep GPT-5 analysis every 10 interactions (non-blocking)
+  if (interactions.length >= 5 && interactions.length % 10 === 0) {
+    analyseUserProfile(userId).catch(err =>
+      console.error('[UserProfiler] Background analysis failed:', err)
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

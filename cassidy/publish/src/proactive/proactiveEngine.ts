@@ -18,11 +18,16 @@ import {
   UserProfile,
 } from './userRegistry';
 import { getAllTriggers, TriggerCondition, OutreachAction } from './eventTriggers';
+import { runPredictionCycle } from '../intelligence/predictiveEngine';
+import { refreshOrgGraph } from '../intelligence/orgGraph';
 import { initiateCall, getCallByUserId } from '../voice/callManager';
 import { shouldEscalateToVoice } from '../voice/voiceAgent';
 
 const POLL_INTERVAL_MS = Number(process.env.PROACTIVE_ENGINE_INTERVAL_MS) || 5 * 60 * 1000; // 5 minutes
 const COOLDOWN_MINUTES = Number(process.env.PROACTIVE_COOLDOWN_MINUTES) || 60;
+const PREDICTION_CYCLE_INTERVAL = 6; // Run predictions every 6th loop (~30 min)
+const ORG_REFRESH_INTERVAL = 72;      // Refresh org graph every 72nd loop (~6 hours)
+let _loopCount = 0;
 
 let _adapter: CloudAdapter | null = null;
 let _botAppId = '';
@@ -57,12 +62,28 @@ export function stopProactiveEngine(): void {
 
 async function runProactiveLoop(): Promise<void> {
   try {
+    _loopCount++;
+
     // Evict stale cooldown entries (2x cooldown period — no longer needed)
     const maxCooldownMs = COOLDOWN_MINUTES * 60 * 1000 * 2;
     for (const [key, date] of _cooldowns) {
       if (Date.now() - date.getTime() > maxCooldownMs) {
         _cooldowns.delete(key);
       }
+    }
+
+    // Run prediction cycle periodically (~every 30 min)
+    if (_loopCount % PREDICTION_CYCLE_INTERVAL === 0) {
+      runPredictionCycle().catch(err =>
+        console.error('[ProactiveEngine] Prediction cycle failed:', err)
+      );
+    }
+
+    // Refresh org graph periodically (~every 6 hours)
+    if (_loopCount % ORG_REFRESH_INTERVAL === 0) {
+      refreshOrgGraph().catch(err =>
+        console.error('[ProactiveEngine] Org graph refresh failed:', err)
+      );
     }
 
     const actions = await evaluateAllTriggers();

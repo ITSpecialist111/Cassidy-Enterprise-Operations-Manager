@@ -55,6 +55,14 @@ export interface DistributeResult {
   failures: string[];
 }
 
+/** Check if data came from demo/mock source and return a warning prefix. */
+function getDemoNotice(data: unknown): string {
+  if (data && typeof data === 'object' && 'source' in data && (data as Record<string, unknown>).source === 'demo') {
+    return '> **⚠️ DEMO DATA** — This section uses sample data. Configure Planner integration for live results.\n\n';
+  }
+  return '';
+}
+
 // ---------------------------------------------------------------------------
 // Data source dispatcher
 // ---------------------------------------------------------------------------
@@ -247,8 +255,9 @@ export async function generateReport(
 
     try {
       const data = await gatherSectionData(sectionWithParams);
+      const demoPrefix = getDemoNotice(data);
       const narrative = await composeNarrative(sectionWithParams, data);
-      sectionContents.push(`## ${section.title}\n\n${narrative}`);
+      sectionContents.push(`## ${section.title}\n\n${demoPrefix}${narrative}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[ReportGen] Section "${section.title}" failed:`, msg);
