@@ -1,6 +1,6 @@
 # Cassidy — Enterprise Operations Manager
 
-A sophisticated autonomous agent for enterprise task coordination, project tracking, approvals, and team workflows. Built on Microsoft Agent Framework and deployed to Microsoft Foundry.
+A sophisticated autonomous agent for enterprise task coordination, project tracking, approvals, and team workflows. Built on Microsoft Agent Framework with live MCP (Model Context Protocol) integration for Calendar, Mail, Planner, and Teams via the Agent 365 Work IQ platform.
 
 ## Overview
 
@@ -12,7 +12,7 @@ Cassidy is an AI-powered operations manager that autonomously handles:
 - **Meeting Intelligence** — Transcription analysis and action item extraction
 - **Report Generation** — Automated insights and performance summaries
 - **Voice & Call Management** — Integration with call systems and voice processing
-- **Calendar & Scheduling** — Event monitoring and deadline management
+- **Calendar & Scheduling** — Live calendar scanning, event monitoring, and deadline management via MCP CalendarTools
 
 ## Architecture
 
@@ -21,7 +21,7 @@ Cassidy is an AI-powered operations manager that autonomously handles:
 ```
 cassidy/
 ├── src/                          # Main agent source code
-│   ├── agent.ts                  # Agent initialization & request handling
+│   ├── agent.ts                  # Agent initialization, GPT-5 orchestration & tool dispatch
 │   ├── auth.ts                   # Authentication & token management
 │   ├── persona.ts                # Agent personality & system prompts
 │   ├── autonomous/               # Autonomous loop & decision-making
@@ -32,9 +32,10 @@ cassidy/
 │   ├── proactive/                # Event triggers & proactive workflows
 │   ├── reports/                  # Report generation & distribution
 │   ├── scheduler/                # Scheduled notifications & reminders
-│   ├── tools/                    # MCP tool setup & handlers
+│   ├── tools/                    # MCP tool setup, OBO auth & handlers
 │   ├── voice/                    # Call management & speech processing
 │   └── workQueue/                # Work decomposition & queue management
+├── ToolingManifest.json          # MCP server declarations (Calendar, Mail, Planner, Teams)
 ├── publish/                      # Azure App Service deployment package
 ├── azure-function-trigger/       # Logic App trigger for scheduled tasks
 └── manifest/                     # Agent manifest & Teams integration
@@ -50,7 +51,7 @@ cassidy/
 | **Orchestration** | Agent coordination, task routing across multiple agents | `orchestrator/taskRouter.ts` |
 | **Proactive Engine** | Event-driven workflows, user notifications | `proactive/proactiveEngine.ts` |
 | **Work Queue** | Goal decomposition, dependency resolution | `workQueue/goalDecomposer.ts` |
-| **Tools** | MCP integration for Microsoft Graph, Teams, SharePoint | `tools/mcpToolSetup.ts` |
+| **Tools** | Live MCP integration — 72 tools across Calendar (13), Mail (22), Planner (10), Teams (27) | `tools/mcpToolSetup.ts` |
 
 ## Features
 
@@ -86,14 +87,15 @@ cassidy/
 ## Getting Started
 
 ### Prerequisites
-- Node.js 18+
+- Node.js 20+ (LTS)
 - Azure subscription with:
-  - Azure App Service
-  - Azure OpenAI (GPT-4 or GPT-5)
+  - Azure App Service (Linux)
+  - Azure OpenAI (GPT-5 deployment)
   - Microsoft Graph access
-  - Teams/Microsoft 365 tenant
-  - (Optional) Azure Table Storage for long-term memory
-- Microsoft Entra ID (Azure AD) app registration
+  - Teams/Microsoft 365 tenant enrolled in Frontier preview
+  - Azure Table Storage for long-term memory (with public network access enabled)
+- Microsoft Entra ID app registration (Agent 365 blueprint)
+- `a365` CLI (Microsoft.Agents.A365.DevTools.Cli --prerelease)
 
 ### Setup Steps
 
@@ -153,7 +155,26 @@ azd init
 azd up
 ```
 
-#### Manual Deployment
+#### Using a365 CLI (recommended)
+
+```bash
+cd cassidy
+
+# One-time setup: permissions, MCP servers, bot registration
+a365 setup all
+a365 setup permissions mcp
+
+# Add MCP servers (creates ToolingManifest.json)
+a365 develop add-mcp-servers mcp_CalendarTools mcp_PlannerServer mcp_MailTools mcp_TeamsServer
+
+# Deploy to Azure App Service
+a365 deploy
+
+# Publish to M365 tenant
+a365 publish
+```
+
+#### Manual Docker Deployment
 
 1. **Build Docker image** (via `cassidy/Dockerfile`)
    ```bash
@@ -162,12 +183,10 @@ azd up
    docker push <acr-name>.azurecr.io/cassidy:latest
    ```
 
-2. **Deploy to Microsoft Foundry**
+2. **Deploy to Azure App Service**
    ```bash
-   # Use a365 CLI or Azure Portal to:
-   # 1. Create hosted agent from agent.yaml
-   # 2. Configure environment variables
-   # 3. Start the agent container
+   az webapp create --resource-group <rg> --plan <plan> --name <app> \
+     --runtime "NODE|20-lts" --deployment-container-image-name <image>
    ```
 
 ## Configuration
@@ -189,23 +208,42 @@ Defines the agent blueprint for Foundry deployment:
 | `AZURE_OPENAI_ENDPOINT` | OpenAI resource endpoint | `https://<name>.openai.azure.com/` |
 | `AZURE_OPENAI_DEPLOYMENT` | Model deployment name | `gpt-5` |
 | `MCP_PLATFORM_ENDPOINT` | Work IQ gateway | `https://agent365.svc.cloud.microsoft` |
+| `agentic_connectionName` | OBO auth handler name | `AgenticAuthConnection` |
 | `OPS_TEAMS_CHANNEL_ID` | Teams channel for standup | `19:abc...@thread.v2` |
 | `MANAGER_EMAIL` | Manager notification email | `admin@contoso.onmicrosoft.com` |
 | `SCHEDULED_SECRET` | Auth token for scheduled API calls | `cassidy-sched-2026-ops` |
 | `ORG_NAME` | Display organization name | `Contoso Corp` |
 | `NODE_ENV` | Runtime environment | `production` |
 
+### MCP Server Configuration
+
+Cassidy connects to 4 MCP servers via the Agent 365 Work IQ platform:
+
+| Server | Tools | Scope |
+|--------|-------|-------|
+| `mcp_CalendarTools` | 13 tools (read/create events, free/busy) | `McpServers.Calendar.All` |
+| `mcp_MailTools` | 22 tools (read/send/search email) | `McpServers.Mail.All` |
+| `mcp_PlannerServer` | 10 tools (tasks, plans, buckets) | `McpServers.Planner.All` |
+| `mcp_TeamsServer` | 27 tools (channels, messages, teams) | `McpServers.Teams.All` |
+
+Servers are declared in `ToolingManifest.json` and registered via `a365 setup permissions mcp`.
+
+Authentication uses OBO (On-Behalf-Of) token exchange — the SDK's `AgenticAuthenticationService.GetAgenticUserToken()` obtains a delegated token for the MCP platform scope, and `Utility.GetToolRequestHeaders()` builds the proper `Authorization`, `x-ms-agentid`, and `x-ms-tenant-id` headers.
+
 ### Memory Storage
 
-By default, conversation history is held in-memory. For production:
+Conversation and long-term memory use Azure Table Storage via managed identity (DefaultAzureCredential):
 
-1. **Configure Azure Table Storage**
-   - Update connection strings in `memory/tableStorage.ts`
-   - Creates tables: `ConversationMemory`, `UserProfiles`, `OrgGraph`
+| Table | Purpose |
+|-------|---------|
+| `CassidyConversations` | Per-user conversation history |
+| `CassidyLongTermMemory` | Extracted facts and preferences |
+| `CassidyUserRegistry` | User profiles and registration |
+| `CassidyUserInsights` | Behavioral analytics |
+| `CassidyAgentRegistry` | Multi-agent coordination |
+| `CassidyWorkQueue` | Autonomous work items |
 
-2. **Data Schema**
-   - Partition keys: User ID, timestamp
-   - Retention: Configurable (default: 90 days)
+**Requirements:** Storage account must have public network access enabled (or VNet integration), and the web app's managed identity needs `Storage Table Data Contributor` role.
 
 ## API Endpoints
 
@@ -277,7 +315,20 @@ npm run lint          # Code quality checks
 
 **Error 13: AADSTS82001 "MCP app-only token blocked"**
 - Cause: Using app-only credentials instead of delegated user token
-- Fix: Ensure `TurnContext` is passed through tool setup
+- Fix: Ensure `TurnContext` is passed through tool setup; app-only fallback is for discovery only
+
+**TenantIdInvalid on MCP tool loading**
+- Cause: The tooling gateway returns `MCPServerConfig` objects without auth headers; the SDK's `getMcpClientTools()` passes `config.headers` directly to the MCP transport
+- Fix: Perform OBO token exchange via `AgenticAuthenticationService.GetAgenticUserToken()`, then enrich each server config with `Utility.GetToolRequestHeaders()` before calling `getMcpClientTools()`. See `tools/mcpToolSetup.ts` `getOboToolHeaders()` and `buildToolDefinitions()`.
+
+**OpenAI 400: tools array too long (>128)**
+- Cause: Too many MCP + static tools combined exceed OpenAI's 128-tool limit
+- Fix: Filter to only configured MCP servers (skip canary/preview variants), cap merged array at 128 in `agent.ts`
+
+**Table Storage 403 AuthorizationFailure**
+- Cause: Storage account has public network access disabled and no VNet integration
+- Fix: Enable public network access: `az storage account update --name <sa> --public-network-access Enabled`
+- Also verify: `Storage Table Data Contributor` role assigned to web app managed identity
 
 **Meeting transcriptions not processing**
 - Check: `meetings/meetingMonitor.ts` event subscriptions
@@ -347,15 +398,18 @@ This project is provided as-is. Modify and use according to your organization's 
 
 ## Roadmap
 
+- [x] ~~Expanded calendar integration (Outlook sync)~~ — Live via MCP CalendarTools (13 tools)
+- [x] ~~MCP tool wiring~~ — 72 live tools across Calendar, Mail, Planner, Teams
 - [ ] Multi-language support (localization)
 - [ ] Custom skill marketplace integration
 - [ ] Advanced sentiment analysis
-- [ ] Expanded calendar integration (Outlook sync)
 - [ ] Custom Azure OpenAI models support
 - [ ] Graph connector support for custom data sources
+- [ ] SharePoint MCP server integration
+- [ ] OneDrive MCP server integration
 
 ---
 
 **Last Updated**: March 25, 2026  
-**Version**: 1.0.0  
-**Status**: Production-Ready
+**Version**: 1.1.0  
+**Status**: Production — 72 live MCP tools, Calendar/Mail/Planner/Teams fully operational

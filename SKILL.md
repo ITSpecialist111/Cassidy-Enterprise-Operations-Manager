@@ -1,8 +1,8 @@
 # Skill: Microsoft Agent 365 SDK — End-to-End Deployment
 
-> **Status:** Verified working as of 2026-03-16  
-> **Agents deployed:** Hello World (echo + GPT-4o) + Morgan (autonomous finance analyst, GPT-5, 11 MCP servers)  
-> **Outcome:** Both agents deployed to Azure, published to M365 tenant, instances running in Teams/M365 Copilot. All permissions granted, MCP OBO auth working.  
+> **Status:** Verified working as of 2026-03-25  
+> **Agents deployed:** Hello World (echo + GPT-4o) + Morgan (autonomous finance analyst, GPT-5, 11 MCP servers) + Cassidy (autonomous operations manager, GPT-5, 4 MCP servers, 72 live tools)  
+> **Outcome:** All three agents deployed to Azure, published to M365 tenant, instances running in Teams. Cassidy confirmed operational with live MCP Calendar/Mail/Planner/Teams tools.  
 > **Frontier preview required:** https://adoption.microsoft.com/copilot/frontier-program/
 
 ---
@@ -29,9 +29,10 @@
     - Error 13: AADSTS82001 MCP app-only token blocked
     - Error 14: Teams markdown tables
 
----
+    - Error 15: TenantIdInvalid — OBO headers missing from MCP server configs
+    - Error 16: OpenAI 400 — tools array too long (>128)
 
-## 1. Overview
+---
 
 ### What is Microsoft Agent 365?
 
@@ -707,16 +708,76 @@ function convertMarkdownTables(md: string): string {
 
 ## 17. Cassidy — Autonomous Operations Manager (Third Deployment)
 
+### Error 15: TenantIdInvalid — OBO headers missing from MCP server configs
+
+**Symptom:**
+```
+[MCP] Failed to load tools from mcp_CalendarTools: TenantIdInvalid
+```
+
+**Root cause:** The `McpToolServerConfigurationService.listToolServers()` method discovers servers from the Work IQ gateway and returns `MCPServerConfig` objects. However, these configs only contain the server URL and basic metadata — they do NOT include authentication headers. The SDK's `getMcpClientTools()` passes `config.headers` directly to `StreamableHTTPClientTransport`, so the MCP server receives no `Authorization` or `x-ms-tenant-id` header and returns `TenantIdInvalid`.
+
+**Fix:** Perform OBO token exchange before tool loading and enrich each server config:
+
+```typescript
+// 1. Get OBO token using AgenticAuthenticationService
+const tokenResult = await AgenticAuthenticationService.GetAgenticUserToken(
+  context, agentApp.authorization, 'AgenticAuthConnection', MCP_PLATFORM_SCOPE
+);
+
+// 2. Build proper headers using Utility.GetToolRequestHeaders()
+const oboHeaders = ToolingUtility.GetToolRequestHeaders(tokenResult.token, context);
+
+// 3. Merge into each server config before getMcpClientTools()
+config.headers = { ...oboHeaders, ...config.headers, 'x-ms-tenant-id': tenantId };
+const tools = await getMcpClientTools(config);
+```
+
+**Key imports:**
+- `Utility as ToolingUtility` from `@microsoft/agents-a365-tooling`
+- `AgenticAuthenticationService` from `@microsoft/agents-a365-runtime`
+
+---
+
+### Error 16: OpenAI 400 — tools array too long (>128)
+
+**Symptom:**
+```
+400 Invalid 'tools': array too long. Expected maximum length 128, got 147
+```
+
+**Root cause:** The Work IQ gateway returned 6 MCP servers (including `TeamsCanaryServer` and `TeamsServerV1` variants we didn't configure) totaling 97 MCP tools. Combined with ~50 static tools = 147, exceeding OpenAI's 128-tool limit.
+
+**Fix (two-part):**
+1. Filter to configured servers only:
+```typescript
+const CONFIGURED_SERVERS = new Set(['mcp_CalendarTools', 'mcp_PlannerServer', 'mcp_MailTools', 'mcp_TeamsServer']);
+// Skip servers not in allowlist
+if (!CONFIGURED_SERVERS.has(config.name)) { console.log(`Skipping ${config.name}`); continue; }
+```
+
+2. Cap merged tool array in agent.ts:
+```typescript
+const MAX_TOOLS = 128;
+if (mergedTools.length > MAX_TOOLS) mergedTools = mergedTools.slice(0, MAX_TOOLS);
+```
+
+MCP tools get priority (first in arraay), static tools fill remaining slots.
+
+---
+
 ### Overview
 
 Cassidy is the third Synthetic Worker deployed. She is an **autonomous, agentic** enterprise Operations Manager with:
 - **GPT-5** agentic loop (manual while loop with tool calling)
 - 6 native operations tools (overdue tasks, team workload, backlog prioritisation, pending approvals, standup reports, project status)
-- 7 Work IQ MCP tools (Teams, Mail, Planner create/update, Calendar, SharePoint Lists)
+- **72 live MCP tools** across 4 servers: Calendar (13), Mail (22), Planner (10), Teams (27)
 - Proactive 30-min overdue task alerts ("start notifications")
 - Daily ops standup (Mon–Fri 9am AEST) and weekly project summary (Monday) via Azure Logic Apps
 - Multi-agent ready (`/api/agent-messages` endpoint for A2A)
 - Express server with 4 endpoints: `/api/health`, `/api/messages`, `/api/scheduled`, `/api/agent-messages`
+- OBO token exchange for MCP tool auth via `AgenticAuthenticationService.GetAgenticUserToken()`
+- 128 tool cap (`MAX_TOOLS`) to stay within OpenAI limits
 
 ### Key Credentials
 
@@ -748,9 +809,47 @@ All automated steps have been completed:
 
 ### Pending Manual Steps
 
-1. ⬜ **Upload manifest** — `cassidy\manifest\manifest.zip` → https://admin.cloud.microsoft/#/agents/all → "Upload custom agent"
-2. ⬜ **Teams Dev Portal** — https://dev.teams.microsoft.com/tools/agent-blueprint/151d7bf7-772f-489b-b407-a8541f3eb7a6/configuration → Agent Type: Bot Based, Bot ID: `151d7bf7-772f-489b-b407-a8541f3eb7a6`
-3. ⬜ **Create instance** — M365 Copilot → Apps → search "Cassidy" → Request → Approve → Create → name: `cassidy`
+All manual steps have been completed:
+
+1. ✅ **Upload manifest** — `cassidy\manifest\manifest.zip` uploaded to M365 Admin Center
+2. ✅ **Teams Dev Portal** — Bot-based configuration set with Blueprint ID
+3. ✅ **Create instance** — Instance created in M365 Copilot, active in Teams chat
+
+### MCP Tool Loading — OBO Auth Header Enrichment (Error 15 fix)
+
+The Agent 365 tooling gateway returns `MCPServerConfig` objects that do NOT include authorization headers. The SDK's `getMcpClientTools()` passes `config.headers` directly to the `StreamableHTTPClientTransport`, resulting in `TenantIdInvalid` errors at the MCP server.
+
+**Fix implemented in `tools/mcpToolSetup.ts`:**
+
+1. `getOboToolHeaders(context)` — Performs OBO token exchange using `AgenticAuthenticationService.GetAgenticUserToken()` for the MCP platform scope (`ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default`), then builds proper headers via `Utility.GetToolRequestHeaders()` (Authorization, x-ms-agentid, x-ms-channel-id, User-Agent)
+
+2. `buildToolDefinitions(context)` — Obtains OBO headers, then for each server config: merges OBO headers as base, overlays gateway headers, normalizes `x-ms-tenant-id`, then passes enriched config to `getMcpClientTools()`
+
+3. `CONFIGURED_SERVERS` — Allowlist Set filtering to only the 4 configured servers (CalendarTools, MailTools, PlannerServer, TeamsServer), skipping canary/preview variants returned by the gateway
+
+4. `MAX_TOOLS = 128` — Cap in `agent.ts` to prevent OpenAI 400 errors when total tool count (MCP + static) exceeds the 128-tool limit
+
+```typescript
+// Key pattern: OBO header enrichment before getMcpClientTools()
+const oboHeaders = await getOboToolHeaders(context);
+for (const config of serverConfigs) {
+  const enrichedHeaders: Record<string, string> = { ...oboHeaders };
+  if (config.headers) {
+    for (const [k, v] of Object.entries(config.headers)) enrichedHeaders[k] = v;
+  }
+  if (tenantId) enrichedHeaders['x-ms-tenant-id'] = tenantId;
+  config.headers = enrichedHeaders;
+  const tools = await getMcpClientTools(config);
+}
+```
+
+### Table Storage — Public Network Access Required
+
+Storage account `cassidyschedsa` was created with public network access disabled. Despite correct RBAC (`Storage Table Data Contributor`), all table operations returned 403. Fixed by enabling public network access:
+
+```bash
+az storage account update --name cassidyschedsa --resource-group rg-cassidy-ops-agent --public-network-access Enabled
+```
 
 ### Manifest Fix Note
 
@@ -924,8 +1023,12 @@ for (let i = 0; i < 10; i++) {
 
 - **Endpoint**: `https://agent365.svc.cloud.microsoft`
 - **Audience**: `ea9ffc3e-8a23-4a7d-836d-234d7c7565c1`
-- **18 servers available** (as of 2026-03-16): MailTools, TeamsServer, SharePointRemoteServer, SharePointListsTools, ODSPRemoteServer, OneDriveRemoteServer, ExcelServer, WordServer, CalendarTools, PlannerServer, KnowledgeTools, M365Copilot, DASearch, Admin365_GraphTools, AdminTools, W365ComputerUse + 2 canary variants
+- **OBO Scope**: `ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default`
+- **18+ servers available** (as of 2026-03-25): MailTools, TeamsServer, TeamsCanaryServer, TeamsServerV1, SharePointRemoteServer, SharePointListsTools, ODSPRemoteServer, OneDriveRemoteServer, ExcelServer, WordServer, CalendarTools, PlannerServer, KnowledgeTools, M365Copilot, DASearch, Admin365_GraphTools, AdminTools, W365ComputerUse + canary variants
 - **11 configured for Morgan**: Mail, Teams, SharePoint (×2), ODSP, OneDrive, Excel, Word, Calendar, Planner, Knowledge
+- **4 configured for Cassidy**: Calendar (13 tools), Mail (22 tools), Planner (10 tools), Teams (27 tools) = **72 live tools**
+- **Important**: Gateway returns more servers than configured; use a `CONFIGURED_SERVERS` allowlist to filter
+- **Important**: Total tool count (MCP + static) must not exceed 128 (OpenAI limit)
 
 ---
 

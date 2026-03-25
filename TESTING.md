@@ -27,9 +27,9 @@ A comprehensive walkthrough of Cassidy's capabilities with clear test scenarios,
 
 **Test Steps:**
 1. Send: `What's my availability next week?`
-   - **Expected:** Cassidy queries your calendar via Microsoft Graph
-   - **Check:** Response includes specific day/time slots from Outlook
-   - **Demo talking point:** "Cassidy understands natural queries without formalized commands"
+   - **Expected:** Cassidy queries your calendar via MCP CalendarTools (13 live tools)
+   - **Check:** Response includes specific day/time slots from Outlook via live MCP integration
+   - **Demo talking point:** "Cassidy queries live calendar data through MCP — no static mocks"
 
 2. Follow-up: `Can you find 30 minutes for a sync with Sarah?`
    - **Expected:** Cassidy references "next week" from previous message
@@ -291,27 +291,32 @@ CASSIDY: [Breaks down into tasks]
    - Send: `What's on my calendar this week?`
    - Point out: Specific times, not just "you're busy"
 
-2. **Task Decomposition** (60 sec)
+2. **Live Calendar Scan** (30 sec)
+   - Send: `Scan my calendar today`
+   - Show: Structured calendar response with event details
+   - Point out: "This data comes live from Outlook via MCP CalendarTools — 13 calendar tools available"
+
+3. **Task Decomposition** (60 sec)
    - Send: `Plan the customer summit for Q3`
    - Show: Ordered subtasks with dependencies
    - Point out: "Cassidy breaks this into actionable work, not just advice"
 
-3. **Autonomous Execution** (30 sec)
+4. **Autonomous Execution** (30 sec)
    - Send: `Go ahead and start`
    - Check Planner/email after 30 seconds
    - Point out: "Tasks auto-created, emails sent automatically"
 
-4. **Context & Memory** (30 sec)
+5. **Context & Memory** (30 sec)
    - Send: `What am I working on?`
    - Cassidy lists the Q3 summit tasks
    - Point out: "Cassidy remembers the context from 2 minutes ago"
 
-5. **Proactive Notifications** (15 sec)
+6. **Proactive Notifications** (15 sec)
    - Mention: "If something falls behind, Cassidy reminds you automatically"
    - If demo shows overdue task, trigger proactive message
 
-6. **Closing**
-   - "Cassidy handles the operations busywork. You focus on strategy."
+7. **Closing**
+   - "Cassidy has 72 live MCP tools across Calendar, Mail, Planner, and Teams. It handles the operations busywork. You focus on strategy."
 
 ---
 
@@ -319,12 +324,16 @@ CASSIDY: [Breaks down into tasks]
 
 | Issue | Diagnosis | Fix |
 |-------|-----------|-----|
-| "Cassidy doesn't respond in Teams" | Agent not running or bot not configured | Check: `OPS_TEAMS_CHANNEL_ID` in `.env`, restart container |
-| "Calendar queries return no data" | Missing Graph permissions | Check: `Calendars.ReadWrite` in customBlueprintPermissions |
-| "Tasks not auto-creating" | Planner API error or no target plan | Verify target Planner plan ID, check logs for 403 errors |
+| "Cassidy doesn't respond in Teams" | Agent not running or bot not configured | Check: `OPS_TEAMS_CHANNEL_ID` in `.env`, verify `a365 deploy` succeeded |
+| "Calendar queries return no data" | MCP CalendarTools not loading or auth failure | Check App Service logs for `[MCP]` entries; verify OBO headers obtained; run `a365 setup permissions mcp` |
+| `TenantIdInvalid` on MCP tool loading | OBO auth headers not enriched on server configs | Verify `getOboToolHeaders()` in `mcpToolSetup.ts` is called; check `agentic_connectionName` env var |
+| `400: tools array too long (>128)` | Too many MCP + static tools combined | Ensure `CONFIGURED_SERVERS` allowlist filters unwanted servers; verify `MAX_TOOLS = 128` cap in `agent.ts` |
+| Table Storage 403 AuthorizationFailure | Storage account public network access disabled | Run: `az storage account update --name <sa> --public-network-access Enabled` |
+| "Tasks not auto-creating" | Planner API error or no target plan | Verify target Planner plan ID via MCP PlannerServer tools, check logs for 403 errors |
 | "Meeting transcripts not detected" | Cassidy not invited or Graph subscription failed | Add Cassidy to meeting as attendee, check subscription webhook health |
 | "Proactive messages not sending" | Quiet hours active or user in cooldown | Send test during 9 AM–5 PM, wait 10+ min between triggers |
 | "Voice calls not working" | Teams communication endpoint not configured | Verify Graph Communication API is enabled in Azure app |
+| MCP server `Forbidden` errors | Scope not configured for that server | Run `a365 setup permissions mcp` to grant missing scopes, or add server to `CONFIGURED_SERVERS` allowlist |
 
 ---
 
