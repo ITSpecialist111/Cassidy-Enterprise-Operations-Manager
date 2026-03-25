@@ -38,7 +38,11 @@ function taskStatus(dueDate?: string, completed?: boolean): string {
 
 // ---------------------------------------------------------------------------
 // Mock data — used when MCP is not available (demo / local dev)
+// ⚠️ All functions below return DEMO DATA with fictional names.
+// When live MCP tools are connected, GPT-5 prefers those instead.
 // ---------------------------------------------------------------------------
+
+const DEMO_DATA_NOTICE = '⚠️ This data is for demonstration purposes only — names and tasks are fictional. Connect MCP tools for live data.';
 
 const MOCK_TASKS = [
   { id: 'task-001', title: 'Vendor contract renewal — IT security review',     dueDate: '2026-03-15', owner: 'Alex Kumar',     project: 'IT Procurement',       completed: false, blocked: false },
@@ -83,6 +87,7 @@ export interface OverdueTaskResult {
   }>;
   blockedCount: number;
   criticalCount: number;
+  notice: string;
 }
 
 export function getOverdueTasks(params: { project?: string; assignee?: string; include_at_risk?: boolean }): OverdueTaskResult {
@@ -122,6 +127,7 @@ export function getOverdueTasks(params: { project?: string; assignee?: string; i
     tasks: result,
     blockedCount: result.filter(t => t.blocked).length,
     criticalCount: result.filter(t => t.daysOverdue > 3).length,
+    notice: DEMO_DATA_NOTICE,
   };
 }
 
@@ -142,6 +148,7 @@ export interface TeamWorkloadResult {
   totalActiveTasks: number;
   totalOverdue: number;
   atCapacityCount: number;
+  notice: string;
 }
 
 export function getTeamWorkload(params: { team_name?: string }): TeamWorkloadResult {
@@ -158,6 +165,7 @@ export function getTeamWorkload(params: { team_name?: string }): TeamWorkloadRes
     totalActiveTasks: members.reduce((sum, m) => sum + m.activeTasks, 0),
     totalOverdue: members.reduce((sum, m) => sum + m.overdueCount, 0),
     atCapacityCount: members.filter(m => m.capacity !== 'normal').length,
+    notice: DEMO_DATA_NOTICE,
   };
 }
 
@@ -242,6 +250,7 @@ export interface PendingApprovalsResult {
   }>;
   overdueCount: number;
   highUrgencyCount: number;
+  notice: string;
 }
 
 export function getPendingApprovals(params: { older_than_days?: number; approver?: string }): PendingApprovalsResult {
@@ -267,6 +276,7 @@ export function getPendingApprovals(params: { older_than_days?: number; approver
     approvals: result,
     overdueCount: result.filter(a => a.isOverdue).length,
     highUrgencyCount: result.filter(a => a.urgency === 'high').length,
+    notice: DEMO_DATA_NOTICE,
   };
 }
 
@@ -282,6 +292,8 @@ export function generateStandupReport(params: { date: string; include_blockers: 
   const lines: string[] = [
     `# 📋 Daily Operations Standup — ${params.date}`,
     `**Prepared by:** Cassidy, Operations Manager  |  **Time:** ${new Date().toUTCString()}`,
+    '',
+    `> ${DEMO_DATA_NOTICE}`,
     '',
     '---',
     '',
@@ -398,6 +410,8 @@ export function generateProjectStatusReport(params: { project_name: string; peri
     `# 📊 Project Status Report — ${params.project_name}`,
     `**Period:** ${params.period}  |  **Overall Status:** ${overallStatus}`,
     `**Prepared by:** Cassidy, Operations Manager  |  **Generated:** ${new Date().toUTCString()}`,
+    '',
+    `> ${DEMO_DATA_NOTICE}`,
     '',
     '---',
     '',

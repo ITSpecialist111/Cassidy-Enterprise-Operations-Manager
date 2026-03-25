@@ -9,6 +9,7 @@
 
 import { getGraphToken } from '../auth';
 import { sharedCredential } from '../auth';
+import { config as appConfig } from '../featureConfig';
 
 // Storage account for hosting TTS audio blobs (same account as Table Storage)
 const STORAGE_ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT ?? 'cassidyschedsa';
@@ -54,8 +55,8 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 // Bot's service URL for callback notifications
-const CALLBACK_URL = process.env.BASE_URL
-  ? `${process.env.BASE_URL}/api/calls/notifications`
+const CALLBACK_URL = appConfig.baseUrl
+  ? `${appConfig.baseUrl}/api/calls/notifications`
   : 'https://cassidyopsagent-webapp.azurewebsites.net/api/calls/notifications';
 
 const BOT_APP_ID = process.env.MicrosoftAppId ?? '';

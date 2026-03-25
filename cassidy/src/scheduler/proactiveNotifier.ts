@@ -131,11 +131,13 @@ export function stopNotifications(convId: string): { success: boolean; message: 
   }
   session.enabled = false;
 
-  return {
-    success: true,
-    message: `🔕 **Interval notifications stopped.** I sent ${session.alertsSent} alert(s) since ${session.startedAt?.toLocaleTimeString() ?? 'start'}.\n\n` +
-      `_Note: I'll still reach out proactively about critical issues. Say **"configure notifications"** to adjust._`,
-  };
+  const msg = `🔕 **Interval notifications stopped.** I sent ${session.alertsSent} alert(s) since ${session.startedAt?.toLocaleTimeString() ?? 'start'}.\n\n` +
+    `_Note: I'll still reach out proactively about critical issues. Say **"configure notifications"** to adjust._`;
+
+  // Clean up session entry — no longer needed once stopped
+  sessions.delete(convId);
+
+  return { success: true, message: msg };
 }
 
 export function getNotificationStatus(convId: string): {

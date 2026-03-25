@@ -385,7 +385,7 @@ export async function executeTool(
 
       // Meeting intelligence tools
       case 'joinMeeting': {
-        const webhookUrl = `${process.env.BASE_URL ?? 'https://cassidyopsagent-webapp.azurewebsites.net'}/api/meeting-webhook`;
+        const webhookUrl = `${appConfig.baseUrl || 'https://cassidyopsagent-webapp.azurewebsites.net'}/api/meeting-webhook`;
         result = await subscribeToMeeting({
           meetingId: params.meeting_id as string,
           organizerName: params.organizer_name as string | undefined,

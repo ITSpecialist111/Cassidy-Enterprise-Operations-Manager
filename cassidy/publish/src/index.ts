@@ -23,6 +23,15 @@ import { handleCallNotification, getActiveCall } from './voice/callManager';
 import { startVoiceConversation, endVoiceConversation } from './voice/voiceAgent';
 import { seedDefaultAgents } from './orchestrator/agentRegistry';
 import { features, logFeatureStatus } from './featureConfig';
+import { timingSafeEqual } from 'crypto';
+
+/** Constant-time secret comparison — prevents timing side-channel attacks. */
+function verifySecret(provided: unknown): boolean {
+  const expected = process.env.SCHEDULED_SECRET;
+  if (typeof provided !== 'string' || !expected) return false;
+  if (provided.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+}
 
 const isDevelopment = features.isDevelopment;
 const authConfig: AuthConfiguration = isDevelopment ? {} : loadAuthConfigFromEnv();
@@ -50,7 +59,7 @@ server.get('/api/health', (_req, res: Response) => {
 // Scheduled standup endpoint — protected by SCHEDULED_SECRET, not JWT
 server.post('/api/scheduled', async (req: express.Request, res: Response) => {
   const secret = req.headers['x-scheduled-secret'] || req.body?.secret;
-  if (!secret || secret !== process.env.SCHEDULED_SECRET) {
+  if (!verifySecret(secret)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
@@ -67,7 +76,7 @@ server.post('/api/scheduled', async (req: express.Request, res: Response) => {
 // Work queue status endpoint — protected by SCHEDULED_SECRET
 server.get('/api/workqueue', async (req: express.Request, res: Response) => {
   const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
-  if (!secret || secret !== process.env.SCHEDULED_SECRET) {
+  if (!verifySecret(secret)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
@@ -90,7 +99,7 @@ server.get('/api/workqueue', async (req: express.Request, res: Response) => {
 // Proactive trigger endpoint — fire a specific trigger on demand (secret-protected)
 server.post('/api/proactive-trigger', async (req: express.Request, res: Response) => {
   const secret = req.headers['x-scheduled-secret'] || req.body?.secret;
-  if (!secret || secret !== process.env.SCHEDULED_SECRET) {
+  if (!verifySecret(secret)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }

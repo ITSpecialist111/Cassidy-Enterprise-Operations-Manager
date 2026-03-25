@@ -6,9 +6,9 @@ import { configDotenv } from 'dotenv';
 configDotenv();
 
 import { TurnState, AgentApplication, TurnContext, MemoryStorage } from '@microsoft/agents-hosting';
-import { ActivityTypes } from '@microsoft/agents-activity';
+import { ActivityTypes, Activity } from '@microsoft/agents-activity';
 import { AzureOpenAI } from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat';
+import type { ChatCompletionMessageParam, ChatCompletionMessageToolCall, ChatCompletionTool } from 'openai/resources/chat';
 import { DefaultAzureCredential, getBearerTokenProvider } from '@azure/identity';
 import { CASSIDY_SYSTEM_PROMPT } from './persona';
 import { getAllTools, executeTool, executeAutonomousStandup } from './tools/index';
@@ -133,7 +133,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   // Check if this is a complex autonomous goal — if so, enqueue and acknowledge
   if (isComplexGoal(userMessage)) {
     const typingInterval = setInterval(async () => {
-      try { await context.sendActivity({ type: ActivityTypes.Typing } as any); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
+      try { await context.sendActivity({ type: ActivityTypes.Typing } as unknown as Activity); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
     }, 4000);
     try {
       await context.sendActivity(`🤔 That sounds like a multi-step goal. I'm planning it out now...`);
@@ -166,7 +166,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
 
   // Send typing indicator every 4s to prevent Teams 15s timeout during GPT-5 reasoning
   const typingInterval = setInterval(async () => {
-    try { await context.sendActivity({ type: ActivityTypes.Typing } as any); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
+    try { await context.sendActivity({ type: ActivityTypes.Typing } as unknown as Activity); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
   }, 4000);
 
   try {
@@ -204,10 +204,11 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     // Live MCP tools take PRIORITY — they're the real M365 connections (Teams, Mail, Planner, Word, Excel, etc.)
     const staticTools = getAllTools();
     const liveMcpTools = await getLiveMcpToolDefinitions(context);
-    const liveNames = new Set(liveMcpTools.map(t => (t as any).function?.name));
+    const toolName = (t: ChatCompletionTool) => t.type === 'function' ? t.function.name : '';
+    const liveNames = new Set(liveMcpTools.map(toolName));
     // Keep static tools only when no live MCP equivalent exists
     const MAX_TOOLS = 128;
-    let mergedTools = [...liveMcpTools, ...staticTools.filter(t => !liveNames.has((t as any).function?.name))];
+    let mergedTools = [...liveMcpTools, ...staticTools.filter(t => !liveNames.has(toolName(t)))];
     if (mergedTools.length > MAX_TOOLS) {
       console.warn(`[Cassidy] Trimming tools from ${mergedTools.length} to ${MAX_TOOLS} (MCP tools kept, static overflow trimmed)`);
       mergedTools = mergedTools.slice(0, MAX_TOOLS);
@@ -299,7 +300,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     const toolsUsedInTurn = messages
       .filter(m => m.role === 'assistant' && 'tool_calls' in m && m.tool_calls)
       .flatMap(m => ('tool_calls' in m && Array.isArray(m.tool_calls))
-        ? m.tool_calls.filter((tc: any) => tc.type === 'function').map((tc: any) => tc.function.name as string)
+        ? (m.tool_calls as ChatCompletionMessageToolCall[]).filter(tc => tc.type === 'function').map(tc => tc.function.name)
         : []
       );
 
