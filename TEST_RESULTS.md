@@ -13,6 +13,26 @@
 
 The previous `AuthorizationFailure` crash path has been fixed in production. Cassidy now responds to prompts again. One functional limitation remains in the Calendar connector path (Work IQ side), but this is now handled gracefully with a user-facing message rather than an exception.
 
+## Latest Remediation Status
+
+The next remediation pass has now been deployed to production with two changes:
+
+1. `AgentApplication` now initializes an `AgenticAuthConnection` authorization handler so live MCP server discovery is no longer blocked by missing app authorization configuration.
+2. Azure Table Storage helpers now fail open on authorization failures for reads, lists, and upserts, preventing registry/profile persistence errors from interrupting runtime behavior.
+
+### Verification completed for this pass
+
+- `npm run build` completed successfully.
+- `npm run test` completed successfully: 4 files, 87 tests passed.
+- `a365 deploy` completed successfully to `cassidyopsagent-webapp`.
+- `GET /api/health` returned `{"status":"healthy","agent":"Cassidy"...}` after deployment.
+- `POST /api/proactive-trigger` returned `{"status":"triggered","triggerType":"morning_briefing","triggered":0,"errors":[]...}` after deployment.
+
+### Verification still pending
+
+- Live Teams chat confirmation that MCP-backed tool discovery now succeeds during a real user turn.
+- Live Teams confirmation that user registry and profiling paths no longer surface authorization failures in turn handling.
+
 ---
 
 ## What Was Fixed
@@ -107,4 +127,4 @@ Cassidy is now operational in Teams for interactive demo flows. The major blocke
 
 ---
 
-**Report Updated:** March 25, 2026, 5:56 AM
+**Report Updated:** March 25, 2026, 6:19 AM

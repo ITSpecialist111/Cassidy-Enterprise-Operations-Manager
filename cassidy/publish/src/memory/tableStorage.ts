@@ -14,6 +14,11 @@ function getTableClient(tableName: string): TableClient {
 const _ensuredTables = new Set<string>();
 const _tablePromises = new Map<string, Promise<void>>();
 
+function isAuthorizationFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('AuthorizationFailure') || msg.includes('This request is not authorized');
+}
+
 async function ensureTable(tableName: string): Promise<void> {
   if (_ensuredTables.has(tableName)) return;
 
@@ -50,9 +55,17 @@ export interface TableEntity {
 }
 
 export async function upsertEntity(tableName: string, entity: TableEntity): Promise<void> {
-  await ensureTable(tableName);
-  const client = getTableClient(tableName);
-  await client.upsertEntity(entity, 'Replace');
+  try {
+    await ensureTable(tableName);
+    const client = getTableClient(tableName);
+    await client.upsertEntity(entity, 'Replace');
+  } catch (err: unknown) {
+    if (isAuthorizationFailure(err)) {
+      console.warn(`[TableStorage] upsertEntity(${tableName}) authorization failed; skipping persistence`);
+      return;
+    }
+    throw err;
+  }
 }
 
 export async function getEntity<T extends TableEntity>(
@@ -68,6 +81,10 @@ export async function getEntity<T extends TableEntity>(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('ResourceNotFound') || msg.includes('404')) return null;
+    if (isAuthorizationFailure(err)) {
+      console.warn(`[TableStorage] getEntity(${tableName}) authorization failed; returning null`);
+      return null;
+    }
     throw err;
   }
 }
@@ -77,15 +94,23 @@ export async function listEntities<T extends TableEntity>(
   partitionKey: string,
   filter?: string,
 ): Promise<T[]> {
-  await ensureTable(tableName);
-  const client = getTableClient(tableName);
-  const results: T[] = [];
-  const baseFilter = odata`PartitionKey eq ${partitionKey}`;
-  const queryFilter = filter ? `${baseFilter} and ${filter}` : baseFilter;
-  for await (const entity of client.listEntities<T>({ queryOptions: { filter: queryFilter } })) {
-    results.push(entity as T);
+  try {
+    await ensureTable(tableName);
+    const client = getTableClient(tableName);
+    const results: T[] = [];
+    const baseFilter = odata`PartitionKey eq ${partitionKey}`;
+    const queryFilter = filter ? `${baseFilter} and ${filter}` : baseFilter;
+    for await (const entity of client.listEntities<T>({ queryOptions: { filter: queryFilter } })) {
+      results.push(entity as T);
+    }
+    return results;
+  } catch (err: unknown) {
+    if (isAuthorizationFailure(err)) {
+      console.warn(`[TableStorage] listEntities(${tableName}) authorization failed; returning empty result set`);
+      return [];
+    }
+    throw err;
   }
-  return results;
 }
 
 export async function deleteEntity(tableName: string, partitionKey: string, rowKey: string): Promise<void> {

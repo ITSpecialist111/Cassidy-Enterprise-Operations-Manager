@@ -40,10 +40,19 @@ export async function loadHistory(conversationId: string): Promise<HistoryMessag
 
 export async function saveHistory(conversationId: string, history: HistoryMessage[]): Promise<void> {
   const trimmed = history.slice(-MAX_HISTORY);
-  await upsertEntity(TABLE, {
-    partitionKey: 'cassidy',
-    rowKey: convKey(conversationId),
-    history: JSON.stringify(trimmed),
-    updatedAt: new Date().toISOString(),
-  });
+  try {
+    await upsertEntity(TABLE, {
+      partitionKey: 'cassidy',
+      rowKey: convKey(conversationId),
+      history: JSON.stringify(trimmed),
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('AuthorizationFailure') || msg.includes('This request is not authorized')) {
+      console.warn('[ConversationMemory] Azure Table Storage authorization failed; continuing without persisted history');
+      return;
+    }
+    throw err;
+  }
 }

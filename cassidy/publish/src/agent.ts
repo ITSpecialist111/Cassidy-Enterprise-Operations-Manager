@@ -53,8 +53,23 @@ const openai = new AzureOpenAI({
   deployment: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
 });
 
+function parseAgenticScopes(): string[] {
+  const raw = process.env.agentic_scopes ?? 'https://graph.microsoft.com/.default';
+  return raw
+    .split(',')
+    .map(scope => scope.trim())
+    .filter(Boolean);
+}
+
 export const agentApplication = new AgentApplication<AppTurnState>({
   storage: new MemoryStorage(),
+  authorization: {
+    AgenticAuthConnection: {
+      type: 'agentic',
+      scopes: parseAgenticScopes(),
+      altBlueprintConnectionName: process.env.agentic_altBlueprintConnectionName ?? 'service_connection',
+    },
+  },
 });
 
 agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, state: AppTurnState) => {
