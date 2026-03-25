@@ -1,0 +1,48 @@
+# Configuration files with secrets
+a365.config.json
+a365.generated.config.json
+a365.config.template.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Azure function app local development
+local.settings.json
+bin/
+obj/
+
+# OS
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temp files
+*.tmp
+*.temp

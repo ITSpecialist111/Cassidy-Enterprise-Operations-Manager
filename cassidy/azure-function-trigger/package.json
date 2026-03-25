@@ -1,0 +1,20 @@
+{
+  "name": "cassidy-scheduler",
+  "version": "1.0.0",
+  "description": "Azure Functions timer triggers for the Cassidy operations agent",
+  "main": "dist/src/*.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.5.0",
+    "axios": "^1.13.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "azure-functions-core-tools": "^4",
+    "typescript": "^5.4.5"
+  }
+}

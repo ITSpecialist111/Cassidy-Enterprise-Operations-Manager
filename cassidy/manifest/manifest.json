@@ -1,0 +1,32 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/vdevPreview/MicrosoftTeams.schema.json",
+  "id": "151d7bf7-772f-489b-b407-a8541f3eb7a6",
+  "name": {
+    "short": "Cassidy",
+    "full": "Cassidy - Operations Manager"
+  },
+  "description": {
+    "short": "Autonomous Operations Manager for tasks, approvals and projects.",
+    "full": "Cassidy is an autonomous Operations Manager agent powered by GPT-5. Coordinates tasks, tracks project status, manages approvals and keeps the team informed via Teams and email. Built on Microsoft Agent 365."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#9ec9d9",
+  "version": "1.0.0",
+  "manifestVersion": "devPreview",
+  "developer": {
+    "name": "Microsoft Corporation",
+    "mpnId": "",
+    "websiteUrl": "https://go.microsoft.com/fwlink/?LinkId=518028",
+    "privacyUrl": "https://go.microsoft.com/fwlink/?LinkId=518028",
+    "termsOfUseUrl": "https://shares.datatransfer.microsoft.com/assets/Microsoft_Terms_of_Use.html"
+  },
+  "agenticUserTemplates": [
+    {
+      "id": "a7a81623-1b4d-4833-8a9f-7af4e48abb94",
+      "file": "agenticUserTemplateManifest.json"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "name": "cassidy-ops-agent",
+  "version": "1.0.0",
+  "description": "Cassidy — Enterprise Operations Manager (Autonomous Agent)",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "dev": "nodemon",
+    "clean": "rimraf dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.3.2",
+    "@azure/identity": "^4.13.0",
+    "@microsoft/agents-a365-tooling": "^0.1.0-preview.119",
+    "@microsoft/agents-a365-tooling-extensions-openai": "^0.1.0-preview.119",
+    "@microsoft/agents-activity": "^1.2.2",
+    "@microsoft/agents-hosting": "^1.2.2",
+    "@modelcontextprotocol/sdk": "^1.25.2",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.9",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "openai": "^6.29.0",
+    "typescript": "^5.4.5",
+    "ulid": "^3.0.2",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "nodemon": "*",
+    "rimraf": "*",
+    "ts-node": "*",
+    "vitest": "^4.1.0"
+  }
+}

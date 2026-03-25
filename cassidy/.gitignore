@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.template
+a365.config.json
+a365.generated.config.json
+dist/
+node_modules/
+*.log

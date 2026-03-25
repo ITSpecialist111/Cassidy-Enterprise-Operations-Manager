@@ -1,0 +1,30 @@
+name: cassidy-ops
+description: "Cassidy — Enterprise Operations Manager. Autonomous agent for task coordination, project tracking, approvals, and team workflows."
+template:
+  kind: hosted
+  protocols:
+    - name: responses
+      version: "1"
+  environment_variables:
+    - name: MicrosoftAppId
+      description: Agent 365 blueprint client ID
+    - name: MicrosoftAppPassword
+      description: Agent 365 blueprint client secret
+    - name: MicrosoftAppTenantId
+      description: Entra tenant ID
+    - name: AZURE_OPENAI_ENDPOINT
+      description: Azure OpenAI endpoint URL
+    - name: AZURE_OPENAI_DEPLOYMENT
+      description: Azure OpenAI model deployment name (e.g. gpt-5)
+    - name: MCP_PLATFORM_ENDPOINT
+      description: Work IQ MCP gateway endpoint (https://agent365.svc.cloud.microsoft)
+    - name: OPS_TEAMS_CHANNEL_ID
+      description: Teams channel ID for operations standup posts
+    - name: MANAGER_EMAIL
+      description: Manager email address for standup summary notifications
+    - name: SCHEDULED_SECRET
+      description: Shared secret for authenticating /api/scheduled calls
+    - name: ORG_NAME
+      description: Organisation name (e.g. Contoso Corp)
+    - name: NODE_ENV
+      description: Runtime environment — must be 'production' for Azure deployment

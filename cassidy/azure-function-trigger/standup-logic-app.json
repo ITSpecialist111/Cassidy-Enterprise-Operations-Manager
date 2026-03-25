@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {},
+  "triggers": {
+    "Recurrence": {
+      "type": "Recurrence",
+      "recurrence": {
+        "frequency": "Week",
+        "interval": 1,
+        "schedule": {
+          "weekDays": ["Monday","Tuesday","Wednesday","Thursday","Friday"],
+          "hours": ["22"],
+          "minutes": [0]
+        },
+        "timeZone": "UTC"
+      }
+    }
+  },
+  "actions": {
+    "HTTP_DailyStandup": {
+      "type": "Http",
+      "inputs": {
+        "method": "POST",
+        "uri": "https://cassidyopsagent-webapp.azurewebsites.net/api/scheduled",
+        "headers": {
+          "x-scheduled-secret": "cassidy-sched-2026-ops",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "triggerType": "dailyStandup",
+          "description": "Daily operations standup"
+        }
+      }
+    }
+  }
+}
