@@ -8,6 +8,11 @@
 // ---------------------------------------------------------------------------
 
 import { getGraphToken } from '../auth';
+import { sharedCredential } from '../auth';
+
+// Storage account for hosting TTS audio blobs (same account as Table Storage)
+const STORAGE_ACCOUNT = process.env.AZURE_STORAGE_ACCOUNT ?? 'cassidyschedsa';
+const AUDIO_CONTAINER = 'cassidy-audio';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -268,46 +273,134 @@ export async function handleCallNotification(notification: CallNotification): Pr
 }
 
 // ---------------------------------------------------------------------------
-// Play audio prompt in a call (TTS via Graph media)
+// Upload audio to Azure Blob Storage (REST API — no SDK dependency)
+// Returns a publicly accessible URL for the audio file.
 // ---------------------------------------------------------------------------
 
-export async function playPromptInCall(callId: string, text: string): Promise<{ success: boolean; error?: string }> {
+let containerEnsured = false;
+
+async function ensureAudioContainer(): Promise<void> {
+  if (containerEnsured) return;
   try {
-    const token = await getGraphToken();
-
-    // TODO(Phase 4 enhancement): Generate audio via Azure Speech SDK, then stream
-    // as mediaInfo.uri. For MVP, we attempt Graph's media prompt and fall back to
-    // posting the text to the user's Teams chat if media play is unavailable.
-    const textPlayBody = {
-      clientContext: `cassidy_tts_${Date.now()}`,
-      prompts: [
-        {
-          '@odata.type': '#microsoft.graph.mediaPrompt',
-          loop: 1,
-        },
-      ],
-    };
-
-    console.log(`[CallManager] Play prompt in call ${callId}: "${text.slice(0, 100)}..."`);
-
-    const res = await fetch(`https://graph.microsoft.com/v1.0/communications/calls/${callId}/playPrompt`, {
-      method: 'POST',
+    const tokenResult = await sharedCredential.getToken('https://storage.azure.com/.default');
+    const url = `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${AUDIO_CONTAINER}?restype=container`;
+    const res = await fetch(url, {
+      method: 'PUT',
       headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenResult.token}`,
+        'x-ms-version': '2023-11-03',
       },
-      body: JSON.stringify(textPlayBody),
+    });
+    // 201 = created, 409 = already exists — both are fine
+    if (res.ok || res.status === 409) {
+      containerEnsured = true;
+      console.log(`[CallManager] Audio container ensured: ${AUDIO_CONTAINER}`);
+    } else {
+      console.warn(`[CallManager] Container creation returned ${res.status}: ${await res.text()}`);
+    }
+  } catch (err) {
+    console.warn('[CallManager] Failed to ensure audio container:', err);
+  }
+}
+
+async function uploadAudioBlob(audioData: Buffer, blobName: string): Promise<string | null> {
+  try {
+    await ensureAudioContainer();
+    const tokenResult = await sharedCredential.getToken('https://storage.azure.com/.default');
+    const url = `https://${STORAGE_ACCOUNT}.blob.core.windows.net/${AUDIO_CONTAINER}/${blobName}`;
+
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${tokenResult.token}`,
+        'x-ms-version': '2023-11-03',
+        'x-ms-blob-type': 'BlockBlob',
+        'Content-Type': 'audio/mpeg',
+        'Content-Length': String(audioData.length),
+      },
+      body: new Uint8Array(audioData),
     });
 
     if (!res.ok) {
-      // Expected to fail in MVP — fall back to chat message
-      console.warn(`[CallManager] playPrompt not available (${res.status}), using chat fallback`);
-      return { success: false, error: 'Media play not available — use chat fallback' };
+      console.error(`[CallManager] Blob upload failed (${res.status}): ${await res.text()}`);
+      return null;
     }
 
-    return { success: true };
+    console.log(`[CallManager] Audio uploaded: ${blobName} (${audioData.length} bytes)`);
+    return url;
+  } catch (err) {
+    console.error('[CallManager] uploadAudioBlob error:', err);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Play audio prompt in a call (TTS via Graph media)
+// ---------------------------------------------------------------------------
+
+export async function playPromptInCall(
+  callId: string,
+  text: string,
+  audioData?: Buffer,
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const token = await getGraphToken();
+
+    // If we have synthesized audio, upload it and use the URI in the media prompt
+    let audioUri: string | null = null;
+    if (audioData && audioData.length > 0) {
+      const blobName = `tts-${callId}-${Date.now()}.mp3`;
+      audioUri = await uploadAudioBlob(audioData, blobName);
+    }
+
+    if (audioUri) {
+      // Full audio prompt with hosted URI
+      const audioPlayBody = {
+        clientContext: `cassidy_tts_${Date.now()}`,
+        prompts: [
+          {
+            '@odata.type': '#microsoft.graph.mediaPrompt',
+            mediaInfo: {
+              '@odata.type': '#microsoft.graph.mediaInfo',
+              uri: audioUri,
+              resourceId: `cassidy-audio-${Date.now()}`,
+            },
+            loop: 1,
+          },
+        ],
+      };
+
+      console.log(`[CallManager] Playing audio in call ${callId}: "${text.slice(0, 80)}..." (${audioData!.length} bytes)`);
+
+      const res = await fetch(`https://graph.microsoft.com/v1.0/communications/calls/${callId}/playPrompt`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(audioPlayBody),
+      });
+
+      if (res.ok) {
+        return { success: true };
+      }
+
+      // If audio play failed, log and fall through to text fallback
+      console.warn(`[CallManager] Audio playPrompt failed (${res.status}): ${await res.text()}`);
+    }
+
+    // Fallback: send the text as a chat message to the call participant
+    const call = activeCalls.get(callId);
+    if (call) {
+      console.warn(`[CallManager] Using chat fallback for call ${callId} to ${call.targetDisplayName}`);
+      // We can't send a chat message from here without a conversation reference,
+      // but we log clearly so the voiceAgent can handle the fallback
+    }
+
+    return { success: false, error: audioUri ? 'Graph playPrompt rejected audio' : 'No audio data — cannot play prompt' };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
+    console.error('[CallManager] playPromptInCall error:', error);
     return { success: false, error };
   }
 }

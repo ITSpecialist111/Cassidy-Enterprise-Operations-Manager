@@ -92,7 +92,7 @@ export async function refreshOrgGraph(): Promise<{ usersProcessed: number; error
               managerId = mgr.id;
               managerName = mgr.displayName;
             }
-          } catch { /* User may not have a manager */ }
+          } catch (mgrErr) { console.debug(`[OrgGraph] No manager for ${user.displayName}:`, mgrErr); }
 
           // Get direct reports
           let directReports: Array<{ id: string; name: string; title: string }> = [];
@@ -109,7 +109,7 @@ export async function refreshOrgGraph(): Promise<{ usersProcessed: number; error
                 title: r.jobTitle ?? '',
               }));
             }
-          } catch { /* ignore */ }
+          } catch (rptErr) { console.warn(`[OrgGraph] Failed to fetch direct reports for ${user.displayName}:`, rptErr); }
 
           const node: OrgNode = {
             partitionKey: PARTITION,
@@ -237,7 +237,7 @@ export async function findExpertise(area: string): Promise<Array<{ id: string; n
       if (expertise.some(e => e.toLowerCase().includes(lowerArea))) {
         results.push({ id: node.rowKey, name: node.displayName, title: node.jobTitle, department: node.department });
       }
-    } catch { /* ignore */ }
+    } catch (parseErr) { console.debug(`[OrgGraph] Failed to parse expertise for ${node.displayName}:`, parseErr); }
 
     // Also check job title
     if (node.jobTitle.toLowerCase().includes(lowerArea)) {

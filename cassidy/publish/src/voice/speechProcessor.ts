@@ -32,22 +32,23 @@ export interface RecognitionResult {
   error?: string;
 }
 
+import { config as appConfig, features } from '../featureConfig';
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 function getSpeechConfig(): SpeechConfig {
   return {
-    subscriptionKey: process.env.AZURE_SPEECH_KEY ?? '',
-    region: process.env.AZURE_SPEECH_REGION ?? 'australiaeast',
-    voiceName: process.env.CASSIDY_VOICE ?? 'en-AU-NatashaNeural',
-    language: process.env.CASSIDY_LANGUAGE ?? 'en-AU',
+    subscriptionKey: appConfig.speechKey,
+    region: appConfig.speechRegion,
+    voiceName: appConfig.voiceName,
+    language: appConfig.speechLanguage,
   };
 }
 
 function isSpeechConfigured(): boolean {
-  const config = getSpeechConfig();
-  return Boolean(config.subscriptionKey && config.region);
+  return features.speechConfigured;
 }
 
 // ---------------------------------------------------------------------------

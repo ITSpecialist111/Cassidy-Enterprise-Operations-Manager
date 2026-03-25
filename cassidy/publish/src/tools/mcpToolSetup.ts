@@ -8,6 +8,7 @@ import type { MCPServerConfig, McpClientTool, ToolOptions } from '@microsoft/age
 import { AgenticAuthenticationService } from '@microsoft/agents-a365-runtime';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { features } from '../featureConfig';
 
 // ---------------------------------------------------------------------------
 // MCP Service (singleton per process)
@@ -36,7 +37,7 @@ const _toolServerMap: Map<string, MCPServerConfig> = new Map();
 // ---------------------------------------------------------------------------
 
 function isMcpAvailable(): boolean {
-  return Boolean(process.env.MCP_PLATFORM_ENDPOINT);
+  return features.mcpAvailable;
 }
 
 function getAuthHandlerName(): string {
@@ -271,7 +272,7 @@ export async function invokeMcpTool(toolName: string, params: Record<string, unk
     ]);
     return result;
   } finally {
-    try { await client.close(); } catch { /* ignore */ }
+    try { await client.close(); } catch (closeErr) { console.debug('[MCP] Client close error (non-blocking):', closeErr); }
   }
 }
 
@@ -356,9 +357,8 @@ export async function sendTeamsMessage(
       return { success: false, error };
     }
   }
-  console.log(`[DEMO] sendTeamsMessage → channel:${params.channel_id} subject:${params.subject ?? '(none)'}`);
-  console.log(`[DEMO] ${params.message.slice(0, 200)}`);
-  return { success: true, messageId: `demo-${Date.now()}` };
+  console.warn(`[Cassidy] sendTeamsMessage unavailable — MCP servers not connected (no TurnContext). channel:${params.channel_id}`);
+  return { success: false, error: 'MCP TeamsServer unavailable — cannot send Teams messages without an active user session. The message was NOT sent.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -386,8 +386,8 @@ export async function sendEmail(
       return { success: false, error };
     }
   }
-  console.log(`[DEMO] sendEmail → to:${params.to} subject:${params.subject}`);
-  return { success: true, messageId: `demo-email-${Date.now()}` };
+  console.warn(`[Cassidy] sendEmail unavailable — MCP servers not connected (no TurnContext). to:${params.to}`);
+  return { success: false, error: 'MCP MailTools unavailable — cannot send email without an active user session. The email was NOT sent.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -424,8 +424,8 @@ export async function createPlannerTask(
       return { success: false, error };
     }
   }
-  console.log(`[DEMO] createPlannerTask → "${params.title}" (assigned: ${params.assigned_to ?? 'unassigned'})`);
-  return { success: true, taskId: `demo-task-${Date.now()}` };
+  console.warn(`[Cassidy] createPlannerTask unavailable — MCP servers not connected (no TurnContext). task:"${params.title}"`);
+  return { success: false, error: 'MCP PlannerServer unavailable — cannot create Planner tasks without an active user session. The task was NOT created.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -460,8 +460,8 @@ export async function updatePlannerTask(
       return { success: false, error };
     }
   }
-  console.log(`[DEMO] updatePlannerTask → id:${params.task_id} pct:${params.percent_complete ?? '—'}%`);
-  return { success: true, taskId: params.task_id };
+  console.warn(`[Cassidy] updatePlannerTask unavailable — MCP servers not connected (no TurnContext). id:${params.task_id}`);
+  return { success: false, error: 'MCP PlannerServer unavailable — cannot update Planner tasks without an active user session. The task was NOT updated.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -498,8 +498,8 @@ export async function scheduleCalendarEvent(
       return { success: false, error };
     }
   }
-  console.log(`[DEMO] scheduleCalendarEvent → "${params.title}" (${params.start_datetime})`);
-  return { success: true, eventId: `demo-event-${Date.now()}`, joinUrl: 'https://teams.microsoft.com/l/meetup-join/demo' };
+  console.warn(`[Cassidy] scheduleCalendarEvent unavailable — MCP servers not connected (no TurnContext). event:"${params.title}"`);
+  return { success: false, error: 'MCP CalendarTools unavailable — cannot schedule calendar events without an active user session. The event was NOT created.' };
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +527,7 @@ export async function findUser(
         const result = await invokeMcpTool(toolName, { query: params.query }) as { users?: FindUserResult['users'] };
         return { success: true, users: result?.users ?? [] };
       }
-    } catch { /* fall through to Graph */ }
+    } catch (mcpErr) { console.warn('[MCP] findUser via MCP failed, falling through to Graph:', mcpErr); }
   }
 
   // Direct Microsoft Graph call — /v1.0/users?$filter=startsWith(displayName,'...')
@@ -582,9 +582,8 @@ export async function readSharePointList(
       return { success: false, data: null, source: 'mcp', error };
     }
   }
-  const mockData = { items: [], message: `Demo: no items returned for ${params.list_name}` };
-  console.log(`[DEMO] readSharePointList → ${params.list_name}`);
-  return { success: true, data: mockData, source: 'mock' };
+  console.warn(`[Cassidy] readSharePointList unavailable — MCP servers not connected (no TurnContext). list:${params.list_name}`);
+  return { success: false, data: null, source: 'mock', error: 'MCP SharePointListsTools unavailable — cannot read SharePoint lists without an active user session.' };
 }
 
 // ---------------------------------------------------------------------------

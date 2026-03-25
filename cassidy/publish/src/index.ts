@@ -22,18 +22,29 @@ import { handleTranscriptWebhook, postToMeetingChat } from './meetings/meetingMo
 import { handleCallNotification, getActiveCall } from './voice/callManager';
 import { startVoiceConversation, endVoiceConversation } from './voice/voiceAgent';
 import { seedDefaultAgents } from './orchestrator/agentRegistry';
+import { features, logFeatureStatus } from './featureConfig';
 
-const isDevelopment = process.env.NODE_ENV === 'development';
+const isDevelopment = features.isDevelopment;
 const authConfig: AuthConfiguration = isDevelopment ? {} : loadAuthConfigFromEnv();
 
-console.log(`Environment: NODE_ENV=${process.env.NODE_ENV}, isDevelopment=${isDevelopment}`);
+logFeatureStatus();
 
 const server = express();
 server.use(express.json());
 
 // Health endpoint (no auth required — needed for App Service warmup probe)
 server.get('/api/health', (_req, res: Response) => {
-  res.status(200).json({ status: 'healthy', agent: 'Cassidy', timestamp: new Date().toISOString() });
+  res.status(200).json({
+    status: 'healthy',
+    agent: 'Cassidy',
+    features: {
+      mcp: features.mcpAvailable,
+      speech: features.speechConfigured,
+      openai: features.openAiConfigured,
+      appIdentity: features.appIdentityConfigured,
+    },
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // Scheduled standup endpoint — protected by SCHEDULED_SECRET, not JWT

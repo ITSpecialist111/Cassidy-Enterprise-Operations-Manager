@@ -94,7 +94,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
       await context.sendActivity(
         `Hi ${userName}! I'm Cassidy, your Operations Manager. How can I help today?`
       );
-    } catch { /* ignore */ }
+    } catch (err) { console.warn('[Cassidy] Failed to send greeting:', err); }
     return;
   }
 
@@ -115,7 +115,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           : `Notifications are currently **off**. Say **"start notifications"** to activate.`,
       };
     }
-    try { await context.sendActivity(result.message); } catch { /* ignore */ }
+    try { await context.sendActivity(result.message); } catch (err) { console.warn('[Cassidy] Failed to send notification response:', err); }
     return;
   }
 
@@ -132,7 +132,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   // Check if this is a complex autonomous goal — if so, enqueue and acknowledge
   if (isComplexGoal(userMessage)) {
     const typingInterval = setInterval(async () => {
-      try { await context.sendActivity({ type: ActivityTypes.Typing } as any); } catch { /* ignore */ }
+      try { await context.sendActivity({ type: ActivityTypes.Typing } as any); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
     }, 4000);
     try {
       await context.sendActivity(`🤔 That sounds like a multi-step goal. I'm planning it out now...`);
@@ -158,14 +158,14 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
       try {
         const errMsg = err instanceof Error ? err.message : String(err);
         await context.sendActivity(`❌ I hit an error while planning that goal: ${errMsg}\nI'll handle it as a regular request instead.`);
-      } catch { /* ignore */ }
+      } catch (sendErr) { console.warn('[Cassidy] Failed to send goal-error fallback:', sendErr); }
       // Fall through to normal Q&A handling below
     }
   }
 
   // Send typing indicator every 4s to prevent Teams 15s timeout during GPT-5 reasoning
   const typingInterval = setInterval(async () => {
-    try { await context.sendActivity({ type: ActivityTypes.Typing } as any); } catch { /* ignore */ }
+    try { await context.sendActivity({ type: ActivityTypes.Typing } as any); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
   }, 4000);
 
   try {
@@ -187,7 +187,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           `Common topics: ${userInsight.commonTopics.join(', ')}\n` +
           `Sentiment trend: ${userInsight.sentimentTrend}`;
       }
-    } catch { /* memory lookup failures should never block the conversation */ }
+    } catch (memErr) { console.warn('[Cassidy] Memory/profile lookup failed (non-blocking):', memErr); }
 
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: CASSIDY_SYSTEM_PROMPT + memoryContext },

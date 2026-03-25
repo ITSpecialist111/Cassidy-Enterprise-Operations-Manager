@@ -27,6 +27,20 @@ interface VoiceConversation {
 
 const activeVoiceConversations = new Map<string, VoiceConversation>();
 
+// Helper: synthesize text to audio and play in the call
+async function synthesizeAndPlay(callId: string, text: string): Promise<void> {
+  if (!isVoiceAvailable()) return;
+  const synthesis = await synthesizeSpeech(text, { rate: 'medium' });
+  const playResult = await playPromptInCall(
+    callId,
+    text,
+    synthesis.success ? synthesis.audioData : undefined,
+  );
+  if (!playResult.success) {
+    console.warn(`[VoiceAgent] Audio play failed for call ${callId}: ${playResult.error}`);
+  }
+}
+
 // Reap stale voice conversations that never got an end signal (2-hour TTL)
 const VOICE_TTL_MS = 2 * 60 * 60 * 1000;
 setInterval(() => {
@@ -98,10 +112,13 @@ export async function startVoiceConversation(callId: string): Promise<string | n
   // Synthesize and play the opening prompt
   if (isVoiceAvailable()) {
     const synthesis = await synthesizeSpeech(openingPrompt, { rate: 'medium' });
-    if (synthesis.success) {
-      // In full implementation, we'd stream this audio to the call
-      // For MVP, we use Graph's playPrompt or fall back to chat
-      await playPromptInCall(callId, openingPrompt);
+    if (synthesis.success && synthesis.audioData) {
+      const playResult = await playPromptInCall(callId, openingPrompt, synthesis.audioData);
+      if (!playResult.success) {
+        console.warn(`[VoiceAgent] Audio prompt failed for call ${callId}: ${playResult.error}`);
+      }
+    } else {
+      console.warn(`[VoiceAgent] TTS synthesis failed: ${synthesis.error}`);
     }
   }
 
@@ -178,13 +195,7 @@ export async function processUserSpeech(callId: string, userText: string): Promi
       const spokenResponse = followUp.choices[0]?.message?.content?.trim();
       if (spokenResponse) {
         conversation.messages.push({ role: 'assistant', content: spokenResponse });
-
-        // Synthesize and play
-        if (isVoiceAvailable()) {
-          await synthesizeSpeech(spokenResponse, { rate: 'medium' });
-          await playPromptInCall(callId, spokenResponse);
-        }
-
+        await synthesizeAndPlay(callId, spokenResponse);
         return spokenResponse;
       }
     }
@@ -193,21 +204,14 @@ export async function processUserSpeech(callId: string, userText: string): Promi
     const spokenResponse = choice.message.content?.trim() ?? null;
     if (spokenResponse) {
       conversation.messages.push({ role: 'assistant', content: spokenResponse });
-
-      if (isVoiceAvailable()) {
-        await synthesizeSpeech(spokenResponse, { rate: 'medium' });
-        await playPromptInCall(callId, spokenResponse);
-      }
+      await synthesizeAndPlay(callId, spokenResponse);
     }
 
     return spokenResponse;
   } catch (err) {
     console.error('[VoiceAgent] processUserSpeech error:', err);
     const fallback = "Sorry, I couldn't process that. Could you repeat?";
-    if (isVoiceAvailable()) {
-      await synthesizeSpeech(fallback);
-      await playPromptInCall(callId, fallback);
-    }
+    await synthesizeAndPlay(callId, fallback);
     return fallback;
   }
 }
