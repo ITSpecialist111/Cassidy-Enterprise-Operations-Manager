@@ -27,14 +27,14 @@ export function initAutonomousLoop(
   _adapter = adapter;
   _conversationRefs = conversationRefs;
   _loopTimer = setInterval(runLoop, POLL_INTERVAL_MS);
-  console.log('[AutonomousLoop] Started — polling every 2 minutes');
+  console.debug('[AutonomousLoop] Started — polling every 2 minutes');
   // Run once immediately after a short delay (let app finish booting)
   setTimeout(runLoop, 15_000);
 }
 
 export function stopAutonomousLoop(): void {
   if (_loopTimer) { clearInterval(_loopTimer); _loopTimer = null; }
-  console.log('[AutonomousLoop] Stopped');
+  console.debug('[AutonomousLoop] Stopped');
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ async function runLoop(): Promise<void> {
   });
 
   if (items.length === 0) return;
-  console.log(`[AutonomousLoop] Processing ${items.length} work item(s)`);
+  console.debug(`[AutonomousLoop] Processing ${items.length} work item(s)`);
 
   for (const item of items) {
     await processItem(item).catch(err =>

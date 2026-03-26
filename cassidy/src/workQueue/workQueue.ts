@@ -4,7 +4,7 @@
 // Work queue for autonomous tasks — stored in Azure Table Storage.
 
 import { ulid } from 'ulid';
-import { upsertEntity, getEntity, listEntities, deleteEntity } from '../memory/tableStorage';
+import { upsertEntity, getEntity, listEntities, deleteEntity, type TableEntity } from '../memory/tableStorage';
 
 const TABLE = 'CassidyWorkQueue';
 const PARTITION = 'cassidy';
@@ -20,9 +20,7 @@ export interface Subtask {
   result?: string;
 }
 
-export interface WorkItem {
-  partitionKey: string;
-  rowKey: string;       // ulid — sortable chronologically
+export interface WorkItem extends TableEntity {
   goal: string;
   subtasks: string;     // JSON Subtask[]
   currentStep: number;
@@ -35,7 +33,6 @@ export interface WorkItem {
   updatedAt: string;
   lastError?: string;
   result?: string;
-  [key: string]: unknown;
 }
 
 export function createWorkItem(params: {
@@ -63,7 +60,7 @@ export function createWorkItem(params: {
 }
 
 export async function enqueueWork(item: WorkItem): Promise<void> {
-  await upsertEntity(TABLE, item as unknown as import('../memory/tableStorage').TableEntity);
+  await upsertEntity(TABLE, item);
   console.log(`[WorkQueue] Enqueued: "${item.goal.slice(0, 80)}" (${item.rowKey})`);
 }
 
@@ -71,7 +68,7 @@ export async function updateWorkItem(item: Partial<WorkItem> & { rowKey: string 
   const existing = await getEntity<WorkItem>(TABLE, PARTITION, item.rowKey);
   if (!existing) return;
   const updated = { ...existing, ...item, updatedAt: new Date().toISOString() };
-  await upsertEntity(TABLE, updated as unknown as import('../memory/tableStorage').TableEntity);
+  await upsertEntity(TABLE, updated);
 }
 
 export async function getPendingItems(): Promise<WorkItem[]> {

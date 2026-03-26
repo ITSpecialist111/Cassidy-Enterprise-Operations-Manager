@@ -133,7 +133,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   // Check if this is a complex autonomous goal — if so, enqueue and acknowledge
   if (isComplexGoal(userMessage)) {
     const typingInterval = setInterval(async () => {
-      try { await context.sendActivity({ type: ActivityTypes.Typing } as unknown as Activity); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
+      try { await context.sendActivity(new Activity(ActivityTypes.Typing)); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
     }, 4000);
     try {
       await context.sendActivity(`🤔 That sounds like a multi-step goal. I'm planning it out now...`);
@@ -166,7 +166,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
 
   // Send typing indicator every 4s to prevent Teams 15s timeout during GPT-5 reasoning
   const typingInterval = setInterval(async () => {
-    try { await context.sendActivity({ type: ActivityTypes.Typing } as unknown as Activity); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
+    try { await context.sendActivity(new Activity(ActivityTypes.Typing)); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
   }, 4000);
 
   try {
@@ -204,16 +204,16 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     // Live MCP tools take PRIORITY — they're the real M365 connections (Teams, Mail, Planner, Word, Excel, etc.)
     const staticTools = getAllTools();
     const liveMcpTools = await getLiveMcpToolDefinitions(context);
-    const toolName = (t: ChatCompletionTool) => t.type === 'function' ? t.function.name : '';
+    const toolName = (t: ChatCompletionTool): string => t.type === 'function' ? t.function.name : '';
     const liveNames = new Set(liveMcpTools.map(toolName));
     // Keep static tools only when no live MCP equivalent exists
     const MAX_TOOLS = 128;
     let mergedTools = [...liveMcpTools, ...staticTools.filter(t => !liveNames.has(toolName(t)))];
     if (mergedTools.length > MAX_TOOLS) {
-      console.warn(`[Cassidy] Trimming tools from ${mergedTools.length} to ${MAX_TOOLS} (MCP tools kept, static overflow trimmed)`);
+      console.debug(`[Cassidy] Trimming tools from ${mergedTools.length} to ${MAX_TOOLS} (MCP tools kept, static overflow trimmed)`);
       mergedTools = mergedTools.slice(0, MAX_TOOLS);
     }
-    console.log(`[Cassidy] Turn tools: ${liveMcpTools.length} live MCP + ${staticTools.length} static = ${mergedTools.length} total`);
+    console.debug(`[Cassidy] Turn tools: ${liveMcpTools.length} live MCP + ${staticTools.length} static = ${mergedTools.length} total`);
 
     // Agentic loop — GPT-5 reasons and calls tools until a final response is produced
     let reply = 'Sorry, I could not generate a response.';

@@ -111,6 +111,7 @@ export function logFeatureStatus(): void {
   console.log(`  Speech/Voice:     ${features.speechConfigured ? '✓ configured' : '✗ no key/region'}`);
   console.log(`  App Identity:     ${features.appIdentityConfigured ? '✓ credentials set' : '✗ incomplete'}`);
   console.log(`  Environment:      ${features.isDevelopment ? 'development' : 'production'}`);
+  console.log(`  Base URL:         ${config.baseUrl || '⚠ NOT SET (BASE_URL env var missing)'}`);
   console.log(`  Model:            ${config.openAiDeployment}`);
   console.log(`  Org:              ${config.orgName} (${config.orgTimezone})`);
   console.log('[Cassidy] ──────────────────────────────────────────');
