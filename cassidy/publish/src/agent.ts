@@ -30,6 +30,16 @@ import { config as appConfig, features } from './featureConfig';
 import { trackOpenAiCall, trackToolCall, trackException } from './telemetry';
 import { withRetry, openAiCircuit, isTransientError } from './retry';
 import { tryBuildCardFromReply } from './adaptiveCards';
+import { logger } from './logger';
+import { userRateLimiter } from './rateLimiter';
+import { LruCache } from './lruCache';
+
+// LRU caches for user profiles and notification preferences (reduces Table Storage calls)
+const userInsightCache = new LruCache<Awaited<ReturnType<typeof getUserInsight>>>(200, 300_000);
+const memoryCache = new LruCache<Awaited<ReturnType<typeof recall>>>(500, 120_000);
+
+/** Expose caches for health endpoint reporting */
+export { userInsightCache, memoryCache };
 
 // State interfaces
 interface ConversationData {
@@ -85,20 +95,57 @@ export const agentApplication = new AgentApplication<AppTurnState>({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Adaptive Card invoke handler — processes Approve / Reject button clicks
+// ---------------------------------------------------------------------------
+agentApplication.onActivity(ActivityTypes.Invoke, async (context: TurnContext, _state: AppTurnState) => {
+  const invoke = context.activity as import('@microsoft/agents-activity').Activity & { name?: string; value?: Record<string, unknown> };
+  if (invoke.name !== 'adaptiveCard/action') return;
+
+  const valueObj = invoke.value as { action?: { data?: { action?: string; approvalId?: string } } } | undefined;
+  const data = valueObj?.action?.data;
+  if (!data?.action || !data?.approvalId) {
+    await context.sendActivity({ type: 'invokeResponse', value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: 'Missing approval data.' } } } as unknown as import('@microsoft/agents-activity').Activity);
+    return;
+  }
+
+  const userName = context.activity.from?.name || 'Unknown';
+  const userId = context.activity.from?.id ?? '';
+  const action = data.action === 'approve' ? 'approved' : 'rejected';
+
+  logger.info(`Approval ${action}`, { module: 'approvals', userId, toolName: 'approval_action', approvalId: data.approvalId, action });
+
+  const responseText = `✅ **${userName}** ${action} approval **${data.approvalId}**.`;
+
+  await context.sendActivity({ type: 'invokeResponse', value: { status: 200, body: { statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: responseText } } } as unknown as import('@microsoft/agents-activity').Activity);
+});
+
 agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, _state: AppTurnState) => {
   const userMessage = context.activity.text?.trim() || '';
   const userName = context.activity.from?.name || 'there';
   const convId = context.activity.conversation?.id ?? '';
+  const userId = context.activity.from?.id ?? '';
 
   // Always register user and persist conversation reference for proactive messaging
-  registerUser(context).catch(err => console.error('[Cassidy] User registration failed:', err));
+  registerUser(context).catch(err => logger.error('User registration failed', { module: 'agent', userId, error: String(err) }));
+
+  // Per-user rate limiting — protect OpenAI quota from spam
+  const rateCheck = userRateLimiter.check(userId);
+  if (!rateCheck.allowed) {
+    const waitSec = Math.ceil(rateCheck.retryAfterMs / 1000);
+    logger.warn('Rate limited', { module: 'agent', userId, retryAfterMs: rateCheck.retryAfterMs });
+    try {
+      await context.sendActivity(`⏳ You're sending messages a bit fast — please wait ~${waitSec}s before trying again.`);
+    } catch { /* best effort */ }
+    return;
+  }
 
   if (!userMessage) {
     try {
       await context.sendActivity(
         `Hi ${userName}! I'm Cassidy, your Operations Manager. How can I help today?`
       );
-    } catch (err) { console.warn('[Cassidy] Failed to send greeting:', err); }
+    } catch (err) { logger.warn('Failed to send greeting', { module: 'agent', userId, error: String(err) }); }
     return;
   }
 
@@ -119,7 +166,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           : `Notifications are currently **off**. Say **"start notifications"** to activate.`,
       };
     }
-    try { await context.sendActivity(result.message); } catch (err) { console.warn('[Cassidy] Failed to send notification response:', err); }
+    try { await context.sendActivity(result.message); } catch (err) { logger.warn('Failed to send notification response', { module: 'agent', userId, error: String(err) }); }
     return;
   }
 
@@ -128,7 +175,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   try {
     history = await loadHistory(convId);
   } catch (err) {
-    console.error('Failed to load conversation history:', err);
+    logger.error('Failed to load conversation history', { module: 'agent', conversationId: convId, error: String(err) });
   }
   history.push({ role: 'user', content: userMessage });
   const recentHistory = history.slice(-20);
@@ -136,7 +183,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   // Check if this is a complex autonomous goal — if so, enqueue and acknowledge
   if (isComplexGoal(userMessage)) {
     const typingInterval = setInterval(async () => {
-      try { await context.sendActivity(new Activity(ActivityTypes.Typing)); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
+      try { await context.sendActivity(new Activity(ActivityTypes.Typing)); } catch (err) { logger.debug('Typing indicator failed', { module: 'agent', error: String(err) }); }
     }, 4000);
     try {
       await context.sendActivity(`🤔 That sounds like a multi-step goal. I'm planning it out now...`);
@@ -146,7 +193,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
         subtasks,
         conversationId: convId,
         serviceUrl: context.activity.serviceUrl ?? '',
-        userId: context.activity.from?.id ?? '',
+        userId,
       });
       await enqueueWork(workItem);
       const plan = subtasks.map((s, i) => `${i + 1}. ${s.description}`).join('\n');
@@ -158,29 +205,37 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
       return; // Goal queued successfully — don't fall through to regular Q&A
     } catch (err) {
       clearInterval(typingInterval);
-      console.error('Goal enqueue error:', err);
+      logger.error('Goal enqueue error', { module: 'agent', userId, error: String(err) });
       try {
         const errMsg = err instanceof Error ? err.message : String(err);
         await context.sendActivity(`❌ I hit an error while planning that goal: ${errMsg}\nI'll handle it as a regular request instead.`);
-      } catch (sendErr) { console.warn('[Cassidy] Failed to send goal-error fallback:', sendErr); }
+      } catch (sendErr) { logger.warn('Failed to send goal-error fallback', { module: 'agent', error: String(sendErr) }); }
       // Fall through to normal Q&A handling below
     }
   }
 
   // Send typing indicator every 4s to prevent Teams 15s timeout during GPT-5 reasoning
   const typingInterval = setInterval(async () => {
-    try { await context.sendActivity(new Activity(ActivityTypes.Typing)); } catch (err) { console.debug('[Cassidy] Typing indicator failed:', err); }
+    try { await context.sendActivity(new Activity(ActivityTypes.Typing)); } catch (err) { logger.debug('Typing indicator failed', { module: 'agent', error: String(err) }); }
   }, 4000);
 
   try {
     // Recall relevant long-term memories and user insight to personalise the response
-    const userId = context.activity.from?.id ?? '';
     let memoryContext = '';
     try {
+      // Use LRU caches to avoid redundant Table Storage calls per turn
+      const cachedInsight = userInsightCache.get(userId);
+      const memoryCacheKey = `${userId}:${userMessage.slice(0, 40)}`;
+      const cachedMemories = memoryCache.get(memoryCacheKey);
+
       const [relevantMemories, userInsight] = await Promise.all([
-        recall(userMessage, { userId, maxResults: 3 }).catch(() => []),
-        getUserInsight(userId).catch(() => null),
+        cachedMemories ?? recall(userMessage, { userId, maxResults: 3 }).catch(() => []),
+        cachedInsight ?? getUserInsight(userId).catch(() => null),
       ]);
+
+      // Populate caches
+      if (!cachedMemories && relevantMemories.length > 0) memoryCache.set(memoryCacheKey, relevantMemories);
+      if (!cachedInsight && userInsight) userInsightCache.set(userId, userInsight);
       if (relevantMemories.length > 0) {
         memoryContext += '\n\n[Relevant long-term memories]\n' +
           relevantMemories.map(m => `- [${m.category}] ${m.content}`).join('\n');
@@ -191,7 +246,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           `Common topics: ${userInsight.commonTopics.join(', ')}\n` +
           `Sentiment trend: ${userInsight.sentimentTrend}`;
       }
-    } catch (memErr) { console.warn('[Cassidy] Memory/profile lookup failed (non-blocking):', memErr); }
+    } catch (memErr) { logger.warn('Memory/profile lookup failed (non-blocking)', { module: 'agent', userId, error: String(memErr) }); }
 
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: CASSIDY_SYSTEM_PROMPT + memoryContext },
@@ -213,10 +268,21 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     const MAX_TOOLS = 128;
     let mergedTools = [...liveMcpTools, ...staticTools.filter(t => !liveNames.has(toolName(t)))];
     if (mergedTools.length > MAX_TOOLS) {
-      console.debug(`[Cassidy] Trimming tools from ${mergedTools.length} to ${MAX_TOOLS} (MCP tools kept, static overflow trimmed)`);
+      logger.debug('Trimming tools', { module: 'agent', totalBefore: mergedTools.length, max: MAX_TOOLS });
       mergedTools = mergedTools.slice(0, MAX_TOOLS);
     }
-    console.debug(`[Cassidy] Turn tools: ${liveMcpTools.length} live MCP + ${staticTools.length} static = ${mergedTools.length} total`);
+    logger.info('Turn tools merged', { module: 'agent', userId, liveMcp: liveMcpTools.length, static: staticTools.length, total: mergedTools.length });
+
+    // ── Graceful degradation — when OpenAI circuit is open, respond with helpful limited-mode message
+    if (openAiCircuit.getState() === 'open') {
+      const degradedReply = `⚠️ **I'm running in limited mode** — my AI reasoning is temporarily unavailable due to upstream issues. ` +
+        `I can still process simple commands like notification controls. Please try again in a minute.`;
+      history.push({ role: 'assistant', content: degradedReply });
+      await saveHistory(convId, history);
+      clearInterval(typingInterval);
+      await context.sendActivity(degradedReply);
+      return;
+    }
 
     // Agentic loop — GPT-5 reasons and calls tools until a final response is produced
     let reply = 'Sorry, I could not generate a response.';
@@ -252,14 +318,14 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
             maxAttempts: 2,
             baseDelayMs: 2000,
             retryIf: isTransientError,
-            onRetry: (attempt, delay) => console.warn(`[Cassidy] OpenAI retry #${attempt} in ${delay}ms`),
+            onRetry: (attempt, delay) => logger.warn('OpenAI retry', { module: 'agent', attempt, durationMs: delay }),
           }),
         );
         trackOpenAiCall(Date.now() - llmStart, true, appConfig.openAiDeployment);
       } catch (apiErr) {
         trackOpenAiCall(Date.now() - llmStart!, false, appConfig.openAiDeployment);
         if (apiErr instanceof Error && (apiErr.name === 'AbortError' || apiErr.message.includes('abort'))) {
-          console.error(`[Cassidy] OpenAI API timeout after ${OPENAI_CALL_TIMEOUT_MS / 1000}s on iteration ${i}`);
+          logger.error('OpenAI API timeout', { module: 'agent', userId, durationMs: OPENAI_CALL_TIMEOUT_MS, iteration: i });
           reply = `⏱️ I'm taking longer than expected to work through this. Let me try a simpler approach — could you ask a more specific question?`;
           break;
         }
@@ -307,7 +373,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           } catch (parseErr) {
             trackToolCall(toolCall.function.name, Date.now() - toolStart, false);
             const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
-            console.error(`[Cassidy] Tool ${toolCall.function.name} failed:`, errMsg);
+            logger.error('Tool execution failed', { module: 'agent', toolName: toolCall.function.name, userId, durationMs: Date.now() - toolStart, error: errMsg });
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: JSON.stringify({ error: errMsg }) };
           }
         })
@@ -331,7 +397,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
         await context.sendActivity(reply);
       }
     } catch (sendErr: unknown) {
-      console.error('sendActivity error:', sendErr);
+      logger.error('sendActivity error', { module: 'agent', userId, error: String(sendErr) });
     }
 
     // Background: record interaction for user profiling and extract long-term memories
@@ -354,25 +420,25 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     };
 
     recordInteraction(userId, userName, interaction).catch(err =>
-      console.error('[Cassidy] Profiling error:', err)
+      logger.error('Profiling error', { module: 'agent', userId, error: String(err) })
     );
 
     // Extract memories if conversation has enough substance (>2 turns)
     if (history.length >= 4) {
       const recentText = history.slice(-6).map(h => `${h.role}: ${h.content}`).join('\n');
       extractMemories(recentText, userId, userName).catch(err =>
-        console.error('[Cassidy] Memory extraction error:', err)
+        logger.error('Memory extraction error', { module: 'agent', userId, error: String(err) })
       );
     }
   } catch (err: unknown) {
     clearInterval(typingInterval);
     const errMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    console.error('OpenAI/tool error:', err);
-    if (err instanceof Error) trackException(err, { module: 'agent', userId: context.activity.from?.id ?? '' });
+    logger.error('OpenAI/tool error', { module: 'agent', userId, error: errMsg });
+    if (err instanceof Error) trackException(err, { module: 'agent', userId });
     try {
       await context.sendActivity(`Sorry, I encountered an error while processing your request. Please try again.\n\n**Debug:** ${errMsg}`);
     } catch (sendErr: unknown) {
-      console.error('sendActivity error in catch block:', sendErr);
+      logger.error('sendActivity error in catch block', { module: 'agent', error: String(sendErr) });
     }
   }
 });
@@ -398,7 +464,7 @@ agentApplication.onActivity(ActivityTypes.InstallationUpdate, async (context: Tu
         `What would you like to work on today?`
       );
     } catch (err: unknown) {
-      console.error('InstallationUpdate sendActivity error:', err);
+      logger.error('InstallationUpdate sendActivity error', { module: 'agent', error: String(err) });
     }
   }
 });

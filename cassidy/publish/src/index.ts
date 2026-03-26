@@ -13,7 +13,7 @@ import {
   Request
 } from '@microsoft/agents-hosting';
 import express, { Response } from 'express';
-import { agentApplication, credential, runAutonomousStandup } from './agent';
+import { agentApplication, credential, runAutonomousStandup, userInsightCache, memoryCache } from './agent';
 import { setAdapter } from './scheduler/proactiveNotifier';
 import { initAutonomousLoop, stopAutonomousLoop } from './autonomous/autonomousLoop';
 import { initProactiveEngine, stopProactiveEngine, triggerSpecific } from './proactive/proactiveEngine';
@@ -26,6 +26,8 @@ import { config, features, logFeatureStatus } from './featureConfig';
 import { initTelemetry, flushTelemetry } from './telemetry';
 import { timingSafeEqual } from 'crypto';
 import { openAiCircuit, graphCircuit, mcpCircuit } from './retry';
+import { logger } from './logger';
+import { userRateLimiter } from './rateLimiter';
 
 // Initialise Application Insights early (before route handlers)
 initTelemetry();
@@ -56,7 +58,7 @@ server.get('/api/health', (_req, res: Response) => {
   res.status(200).json({
     status: 'healthy',
     agent: 'Cassidy',
-    version: '1.5.0',
+    version: '1.6.0',
     uptimeHours: Number(uptimeH),
     features: {
       mcp: features.mcpAvailable,
@@ -70,6 +72,13 @@ server.get('/api/health', (_req, res: Response) => {
       graph: graphCircuit.getState(),
       mcp: mcpCircuit.getState(),
     },
+    caches: {
+      userInsights: userInsightCache.size,
+      memories: memoryCache.size,
+    },
+    rateLimiter: {
+      trackedUsers: userRateLimiter.getTrackedUsers(),
+    },
     timestamp: new Date().toISOString(),
   });
 });
@@ -82,11 +91,11 @@ server.post('/api/scheduled', async (req: express.Request, res: Response) => {
     return;
   }
   try {
-    console.log('Autonomous standup triggered via /api/scheduled');
+    logger.info('Autonomous standup triggered via /api/scheduled', { module: 'scheduler' });
     await runAutonomousStandup();
     res.status(200).json({ status: 'standup_complete', timestamp: new Date().toISOString() });
   } catch (err: unknown) {
-    console.error('Autonomous standup error:', err);
+    logger.error('Autonomous standup error', { module: 'scheduler', error: String(err) });
     res.status(500).json({ error: 'Standup failed', timestamp: new Date().toISOString() });
   }
 });
@@ -123,11 +132,11 @@ server.post('/api/proactive-trigger', async (req: express.Request, res: Response
   }
   const triggerType = req.body?.triggerType ?? 'morning_briefing';
   try {
-    console.log(`[Cassidy] Proactive trigger fired: ${triggerType}`);
+    logger.info('Proactive trigger fired', { module: 'proactive', triggerType });
     const result = await triggerSpecific(triggerType);
     res.status(200).json({ status: 'triggered', triggerType, ...result, timestamp: new Date().toISOString() });
   } catch (err: unknown) {
-    console.error('Proactive trigger error:', err);
+    logger.error('Proactive trigger error', { module: 'proactive', error: String(err) });
     res.status(500).json({ error: 'Trigger failed', timestamp: new Date().toISOString() });
   }
 });
@@ -147,7 +156,7 @@ server.post('/api/meeting-webhook', async (req: express.Request, res: Response) 
       (item: { clientState?: string }) => item.clientState?.startsWith('cassidy_meeting_')
     );
     if (!allValid) {
-      console.warn('[MeetingWebhook] Invalid clientState — rejecting notification');
+      logger.warn('Invalid clientState on meeting webhook', { module: 'meetings' });
       res.status(403).json({ error: 'Invalid clientState' });
       return;
     }
@@ -159,13 +168,13 @@ server.post('/api/meeting-webhook', async (req: express.Request, res: Response) 
     // Post any Cassidy responses to the meeting chat
     for (const r of responses) {
       await postToMeetingChat(r.chatId, r.message).catch(err =>
-        console.error(`[MeetingWebhook] Failed to post to chat ${r.chatId}:`, err)
+        logger.error('Failed to post to meeting chat', { module: 'meetings', chatId: r.chatId, error: String(err) })
       );
     }
 
     res.status(202).json({ processed: responses.length });
   } catch (err: unknown) {
-    console.error('Meeting webhook error:', err);
+    logger.error('Meeting webhook error', { module: 'meetings', error: String(err) });
     res.status(200).json({ status: 'error_logged' }); // Graph requires 2xx even on errors
   }
 });
@@ -190,7 +199,7 @@ server.post('/api/calls/notifications', async (req: express.Request, res: Respon
     if (result.action === 'play_prompt' && result.callId) {
       // Call just connected — start the voice conversation
       startVoiceConversation(result.callId).catch(err =>
-        console.error(`[CallNotification] Failed to start voice conversation:`, err)
+        logger.error('Failed to start voice conversation', { module: 'voice', callId: result.callId, error: String(err) })
       );
     } else if (result.action === 'end' && result.callId) {
       endVoiceConversation(result.callId);
@@ -198,7 +207,7 @@ server.post('/api/calls/notifications', async (req: express.Request, res: Respon
 
     res.status(200).json({ status: 'processed' });
   } catch (err: unknown) {
-    console.error('Call notification error:', err);
+    logger.error('Call notification error', { module: 'voice', error: String(err) });
     res.status(200).json({ status: 'error_logged' });
   }
 });
@@ -216,7 +225,7 @@ server.post('/api/messages', (req: Request, res: Response) => {
 
 // Agent-to-Agent (A2A) messages endpoint
 server.post('/api/agent-messages', (req: Request, res: Response) => {
-  console.debug('A2A message received from:', req.headers['x-agent-id'] || 'unknown-agent');
+  logger.info('A2A message received', { module: 'a2a', agentId: String(req.headers['x-agent-id'] || 'unknown-agent') });
   const adapter = agentApplication.adapter as CloudAdapter;
   adapter.process(req, res, async (context) => {
     await agentApplication.run(context);
@@ -228,8 +237,8 @@ const port = Number(process.env.PORT) || 3978;
 const host = process.env.HOST ?? (isDevelopment ? 'localhost' : '0.0.0.0');
 
 const httpServer = server.listen(port, host, () => {
-  console.log(`\nCassidy (Operations Manager) listening on ${host}:${port}`);
-  console.log(`Health check: http://${host}:${port}/api/health`);
+  logger.info('Cassidy listening', { module: 'startup', host, port });
+  logger.info('Health check available', { module: 'startup', url: `http://${host}:${port}/api/health` });
 
   // Wire adapter into the proactive notifier for out-of-turn messaging (legacy)
   const adapter = agentApplication.adapter as CloudAdapter;
@@ -238,10 +247,10 @@ const httpServer = server.listen(port, host, () => {
   // Start the intelligent proactive engine — evaluates triggers every 5 min,
   // composes natural GPT-5 messages, sends via Teams 1:1 chat
   initProactiveEngine(adapter);
-  console.log('Proactive engine started — intelligent outreach active');
+  logger.info('Proactive engine started', { module: 'startup' });
 
   // Seed the multi-agent registry with known specialist agents
-  seedDefaultAgents().catch(err => console.error('Agent registry seeding failed:', err));
+  seedDefaultAgents().catch(err => logger.error('Agent registry seeding failed', { module: 'startup', error: String(err) }));
 
   // Start the autonomous work loop — polls work queue every 2 min, executes tasks proactively
   // Pass empty map initially; refs are populated as users interact
@@ -250,27 +259,27 @@ const httpServer = server.listen(port, host, () => {
   // Backfill conversation refs from persistent storage
   getAllConversationRefs().then(refs => {
     for (const [id, ref] of refs) emptyRefs.set(id, ref);
-    console.log(`Autonomous work loop started (${refs.size} persisted conversation ref(s) loaded)`);
-  }).catch((err: unknown) => console.warn('Autonomous work loop started (ref backfill failed):', err));
+    logger.info('Autonomous work loop started', { module: 'startup', conversationRefs: refs.size });
+  }).catch((err: unknown) => logger.warn('Autonomous work loop ref backfill failed', { module: 'startup', error: String(err) }));
 
   // Pre-warm managed identity token to avoid IMDS cold-start delay (~60s)
   if (!isDevelopment) {
     credential.getToken('https://cognitiveservices.azure.com/.default')
-      .then(() => console.log('Managed identity token pre-warmed successfully'))
-      .catch((err: unknown) => console.warn('Token pre-warm failed (will retry on first message):', err));
+      .then(() => logger.info('Managed identity token pre-warmed', { module: 'startup' }))
+      .catch((err: unknown) => logger.warn('Token pre-warm failed', { module: 'startup', error: String(err) }));
   }
 }).on('error', (err: unknown) => {
-  console.error(err);
+  logger.error('Server error', { module: 'startup', error: String(err) });
   process.exit(1);
 });
 
 // Graceful shutdown — stop background loops before process exits
 function gracefulShutdown(signal: string) {
-  console.log(`[Cassidy] ${signal} received — shutting down gracefully`);
+  logger.info('Graceful shutdown initiated', { module: 'lifecycle', signal });
   stopAutonomousLoop();
   stopProactiveEngine();
   httpServer.close(() => {
-    console.log('[Cassidy] HTTP server closed');
+    logger.info('HTTP server closed', { module: 'lifecycle' });
     process.exit(0);
   });
   flushTelemetry();
