@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 import { upsertEntity, getEntity, listEntities, deleteEntity } from '../memory/tableStorage';
+import { config as appConfig } from '../featureConfig';
 
 const TABLE = 'CassidyAgentRegistry';
 const PARTITION = 'agents';
@@ -226,7 +227,7 @@ export async function invokeAgent(
     };
 
     const agentController = new AbortController();
-    const agentTimeout = setTimeout(() => agentController.abort(), 30_000);
+    const agentTimeout = setTimeout(() => agentController.abort(), appConfig.agentFetchTimeoutMs);
     const res = await fetch(agent.endpoint, {
       method: 'POST',
       headers: {

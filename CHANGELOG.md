@@ -2,6 +2,17 @@
 
 All notable changes to the Cassidy Enterprise Operations Manager are documented here.
 
+## [1.3.0] — 2026-03-26
+
+### Deploy #19 — CI Pipeline, App Insights, Config Extraction, Bicep IaC
+- **GitHub Actions CI**: `.github/workflows/ci.yml` — checkout, Node 22, `npm ci`, `tsc --noEmit`, `vitest run` on push/PR to master
+- **Application Insights instrumentation**: `src/telemetry.ts` module with `initTelemetry()`, `trackOpenAiCall()`, `trackToolCall()`, `trackProactiveEvent()`, `trackException()`, `flushTelemetry()`. SDK is an optional dependency — no-op stubs when connection string is absent
+- **Magic numbers → env config**: Extracted 15 hardcoded timeouts/intervals across 8 files into `AppConfig` with env var overrides (`OPENAI_CLIENT_TIMEOUT_MS`, `TOOL_EXEC_TIMEOUT_MS`, `AUTONOMOUS_POLL_INTERVAL_MS`, `GRAPH_TIMEOUT_MS`, etc.)
+- **Bicep IaC template**: `infra/main.bicep` — App Service Plan, Web App (Node 22, system-assigned identity), Storage Account (6 tables), Log Analytics + Application Insights, Storage Table Data Contributor role assignment
+- New `appInsightsConfigured` feature flag in startup status log
+- `flushTelemetry()` called during graceful shutdown
+- 279 tests still all green
+
 ## [1.2.0] — 2026-03-26
 
 ### Deploy #18 (`b0022d8`) — Type Safety & Cleanup

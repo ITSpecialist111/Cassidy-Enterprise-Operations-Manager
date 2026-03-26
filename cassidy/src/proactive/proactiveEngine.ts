@@ -22,6 +22,7 @@ import { runPredictionCycle } from '../intelligence/predictiveEngine';
 import { refreshOrgGraph } from '../intelligence/orgGraph';
 import { initiateCall, getCallByUserId } from '../voice/callManager';
 import { shouldEscalateToVoice } from '../voice/voiceAgent';
+import { config as appConfig } from '../featureConfig';
 
 const POLL_INTERVAL_MS = Number(process.env.PROACTIVE_ENGINE_INTERVAL_MS) || 5 * 60 * 1000; // 5 minutes
 const COOLDOWN_MINUTES = Number(process.env.PROACTIVE_COOLDOWN_MINUTES) || 60;
@@ -46,8 +47,8 @@ export function initProactiveEngine(adapter: CloudAdapter): void {
   _botAppId = process.env.MicrosoftAppId ?? '';
   _loopTimer = setInterval(runProactiveLoop, POLL_INTERVAL_MS);
   console.log(`[ProactiveEngine] Started — evaluating triggers every ${POLL_INTERVAL_MS / 1000}s`);
-  // First evaluation after 30s boot delay
-  _bootTimer = setTimeout(runProactiveLoop, 30_000);
+  // First evaluation after boot delay
+  _bootTimer = setTimeout(runProactiveLoop, appConfig.proactiveBootDelayMs);
 }
 
 export function stopProactiveEngine(): void {

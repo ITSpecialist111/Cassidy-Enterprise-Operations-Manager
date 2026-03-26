@@ -22,8 +22,12 @@ import { handleTranscriptWebhook, postToMeetingChat } from './meetings/meetingMo
 import { handleCallNotification, getActiveCall } from './voice/callManager';
 import { startVoiceConversation, endVoiceConversation } from './voice/voiceAgent';
 import { seedDefaultAgents } from './orchestrator/agentRegistry';
-import { features, logFeatureStatus } from './featureConfig';
+import { config, features, logFeatureStatus } from './featureConfig';
+import { initTelemetry, flushTelemetry } from './telemetry';
 import { timingSafeEqual } from 'crypto';
+
+// Initialise Application Insights early (before route handlers)
+initTelemetry();
 
 /** Constant-time secret comparison — prevents timing side-channel attacks. */
 function verifySecret(provided: unknown): boolean {
@@ -253,8 +257,9 @@ function gracefulShutdown(signal: string) {
     console.log('[Cassidy] HTTP server closed');
     process.exit(0);
   });
-  // Force exit after 10s if server.close hangs
-  setTimeout(() => process.exit(1), 10_000).unref();
+  flushTelemetry();
+  // Force exit if server.close hangs
+  setTimeout(() => process.exit(1), config.shutdownGracePeriodMs).unref();
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));

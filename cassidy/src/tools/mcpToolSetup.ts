@@ -8,7 +8,7 @@ import type { MCPServerConfig, McpClientTool, ToolOptions } from '@microsoft/age
 import { AgenticAuthenticationService } from '@microsoft/agents-a365-runtime';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { features } from '../featureConfig';
+import { features, config as appConfig } from '../featureConfig';
 
 // ---------------------------------------------------------------------------
 // MCP Service (singleton per process)
@@ -249,7 +249,7 @@ async function buildToolDefinitions(context?: TurnContext): Promise<ChatCompleti
 // Invoke an MCP tool by name using StreamableHTTP transport
 // ---------------------------------------------------------------------------
 
-const MCP_TOOL_TIMEOUT_MS = 30_000; // 30s per MCP tool call
+const MCP_TOOL_TIMEOUT_MS = appConfig.mcpToolTimeoutMs; // per MCP tool call
 
 export async function invokeMcpTool(toolName: string, params: Record<string, unknown>): Promise<unknown> {
   const serverConfig = _toolServerMap.get(toolName);

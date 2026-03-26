@@ -215,7 +215,7 @@ let _lastGeneratedReport: { cacheKey: string; report: Awaited<ReturnType<typeof 
 async function getOrGenerateReport(templateId: string, params: Record<string, unknown>, context?: TurnContext) {
   // Include params in cache key so different parameters don't return stale results
   const cacheKey = `${templateId}:${JSON.stringify(params)}`;
-  if (_lastGeneratedReport && _lastGeneratedReport.cacheKey === cacheKey && (Date.now() - _lastGeneratedReport.timestamp) < 60_000) {
+  if (_lastGeneratedReport && _lastGeneratedReport.cacheKey === cacheKey && (Date.now() - _lastGeneratedReport.timestamp) < appConfig.reportCacheTtlMs) {
     return _lastGeneratedReport.report;
   }
   const report = await generateReport(templateId, params as { project_name?: string; period?: string; date?: string }, context);

@@ -28,7 +28,7 @@ function taskStatus(dueDate?: string, completed?: boolean): string {
 // Graph API helper with timeout
 // ---------------------------------------------------------------------------
 
-const GRAPH_TIMEOUT_MS = 10_000;
+const GRAPH_TIMEOUT_MS = appConfig.graphTimeoutMs;
 
 async function graphGet<T>(path: string): Promise<T> {
   const token = await getGraphToken();
@@ -53,7 +53,7 @@ async function graphGet<T>(path: string): Promise<T> {
 
 interface CacheEntry<T> { data: T; expiresAt: number }
 const cache = new Map<string, CacheEntry<unknown>>();
-const CACHE_TTL_MS = 60_000;
+const CACHE_TTL_MS = appConfig.graphCacheTtlMs;
 
 function getCached<T>(key: string): T | undefined {
   const entry = cache.get(key);

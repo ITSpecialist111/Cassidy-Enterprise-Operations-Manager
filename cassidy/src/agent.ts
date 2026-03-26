@@ -52,13 +52,13 @@ const openai = new AzureOpenAI({
   endpoint: appConfig.openAiEndpoint,
   apiVersion: '2025-04-01-preview',
   deployment: appConfig.openAiDeployment,
-  timeout: 120_000,  // 120s hard timeout — GPT-5 reasoning can be slow
+  timeout: appConfig.openAiClientTimeoutMs,
   maxRetries: 1,
 });
 
 // Per-call timeout for OpenAI requests (AbortController)
-const OPENAI_CALL_TIMEOUT_MS = 90_000; // 90s per iteration
-const TOOL_EXEC_TIMEOUT_MS = 30_000;   // 30s per tool call
+const OPENAI_CALL_TIMEOUT_MS = appConfig.openAiCallTimeoutMs;
+const TOOL_EXEC_TIMEOUT_MS = appConfig.toolExecTimeoutMs;
 
 function parseAgenticScopes(): string[] {
   const raw =

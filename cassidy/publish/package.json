@@ -28,6 +28,9 @@
     "ulid": "^3.0.2",
     "zod": "^3.25.0"
   },
+  "optionalDependencies": {
+    "applicationinsights": "^3.14.0"
+  },
   "devDependencies": {
     "nodemon": "*",
     "rimraf": "*",

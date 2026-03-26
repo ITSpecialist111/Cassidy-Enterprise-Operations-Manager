@@ -12,8 +12,9 @@ import {
 } from '../workQueue/workQueue';
 import { getAllTools, executeTool } from '../tools/index';
 import { getSharedOpenAI } from '../auth';
+import { config as appConfig } from '../featureConfig';
 
-const POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+const POLL_INTERVAL_MS = appConfig.autonomousPollIntervalMs;
 const MAX_RETRIES = 3;
 
 let _adapter: CloudAdapter | null = null;
@@ -29,7 +30,7 @@ export function initAutonomousLoop(
   _loopTimer = setInterval(runLoop, POLL_INTERVAL_MS);
   console.debug('[AutonomousLoop] Started — polling every 2 minutes');
   // Run once immediately after a short delay (let app finish booting)
-  setTimeout(runLoop, 15_000);
+  setTimeout(runLoop, appConfig.autonomousBootDelayMs);
 }
 
 export function stopAutonomousLoop(): void {
@@ -109,7 +110,7 @@ async function processItem(item: WorkItem): Promise<void> {
     if (newRetryCount < MAX_RETRIES) {
       // Reset subtask for retry on next loop
       next.status = 'pending';
-      const backoffMs = Math.pow(2, newRetryCount) * 60_000;
+      const backoffMs = Math.pow(2, newRetryCount) * appConfig.autonomousBackoffBaseMs;
       console.log(`[AutonomousLoop] Will retry in ${backoffMs / 60000} min (attempt ${newRetryCount + 1}/${MAX_RETRIES})`);
     }
 
@@ -160,7 +161,7 @@ Do not ask questions — make reasonable decisions and proceed.`;
     let response;
     try {
       const controller = new AbortController();
-      const timeoutHandle = setTimeout(() => controller.abort(), 60_000);
+      const timeoutHandle = setTimeout(() => controller.abort(), appConfig.autonomousSubtaskTimeoutMs);
       response = await openai.chat.completions.create(
         {
           model: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',

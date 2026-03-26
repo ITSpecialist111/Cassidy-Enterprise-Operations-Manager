@@ -14,6 +14,8 @@ export interface FeatureFlags {
   openAiConfigured: boolean;
   /** App identity credentials set — Graph + multi-tenant calls available */
   appIdentityConfigured: boolean;
+  /** Application Insights connection string is set — telemetry available */
+  appInsightsConfigured: boolean;
   /** Running in local development mode */
   isDevelopment: boolean;
 }
@@ -57,6 +59,39 @@ export interface AppConfig {
   plannerGroupId: string;
   /** Planner Plan ID within the group */
   plannerPlanId: string;
+  // ── Timeout / interval configuration ──────────────────────────────────
+  /** OpenAI SDK client-level timeout (ms) */
+  openAiClientTimeoutMs: number;
+  /** Per-call OpenAI AbortController timeout (ms) */
+  openAiCallTimeoutMs: number;
+  /** Per tool-call execution timeout (ms) */
+  toolExecTimeoutMs: number;
+  /** MCP tool invocation timeout (ms) */
+  mcpToolTimeoutMs: number;
+  /** Autonomous loop poll interval (ms) */
+  autonomousPollIntervalMs: number;
+  /** Autonomous loop initial boot delay (ms) */
+  autonomousBootDelayMs: number;
+  /** Autonomous subtask GPT call timeout (ms) */
+  autonomousSubtaskTimeoutMs: number;
+  /** Autonomous retry backoff base (ms) */
+  autonomousBackoffBaseMs: number;
+  /** Goal decomposition GPT call timeout (ms) */
+  goalDecomposeTimeoutMs: number;
+  /** Agent-to-agent fetch timeout (ms) */
+  agentFetchTimeoutMs: number;
+  /** Graph API call timeout (ms) */
+  graphTimeoutMs: number;
+  /** Graph call cache TTL (ms) */
+  graphCacheTtlMs: number;
+  /** Report cache TTL (ms) */
+  reportCacheTtlMs: number;
+  /** Proactive engine initial boot delay (ms) */
+  proactiveBootDelayMs: number;
+  /** Graceful shutdown timeout (ms) */
+  shutdownGracePeriodMs: number;
+  /** Application Insights connection string */
+  appInsightsConnectionString: string;
 }
 
 function readConfig(): AppConfig {
@@ -80,6 +115,23 @@ function readConfig(): AppConfig {
     agenticConnectionName: process.env.agentic_connectionName ?? 'AgenticAuthConnection',
     plannerGroupId: process.env.PLANNER_GROUP_ID ?? '',
     plannerPlanId: process.env.PLANNER_PLAN_ID ?? '',
+    // ── Timeouts & intervals ──────────────────────────────────────────
+    openAiClientTimeoutMs: Number(process.env.OPENAI_CLIENT_TIMEOUT_MS) || 120_000,
+    openAiCallTimeoutMs: Number(process.env.OPENAI_CALL_TIMEOUT_MS) || 90_000,
+    toolExecTimeoutMs: Number(process.env.TOOL_EXEC_TIMEOUT_MS) || 30_000,
+    mcpToolTimeoutMs: Number(process.env.MCP_TOOL_TIMEOUT_MS) || 30_000,
+    autonomousPollIntervalMs: Number(process.env.AUTONOMOUS_POLL_INTERVAL_MS) || 120_000,
+    autonomousBootDelayMs: Number(process.env.AUTONOMOUS_BOOT_DELAY_MS) || 15_000,
+    autonomousSubtaskTimeoutMs: Number(process.env.AUTONOMOUS_SUBTASK_TIMEOUT_MS) || 60_000,
+    autonomousBackoffBaseMs: Number(process.env.AUTONOMOUS_BACKOFF_BASE_MS) || 60_000,
+    goalDecomposeTimeoutMs: Number(process.env.GOAL_DECOMPOSE_TIMEOUT_MS) || 30_000,
+    agentFetchTimeoutMs: Number(process.env.AGENT_FETCH_TIMEOUT_MS) || 30_000,
+    graphTimeoutMs: Number(process.env.GRAPH_TIMEOUT_MS) || 10_000,
+    graphCacheTtlMs: Number(process.env.GRAPH_CACHE_TTL_MS) || 60_000,
+    reportCacheTtlMs: Number(process.env.REPORT_CACHE_TTL_MS) || 60_000,
+    proactiveBootDelayMs: Number(process.env.PROACTIVE_BOOT_DELAY_MS) || 30_000,
+    shutdownGracePeriodMs: Number(process.env.SHUTDOWN_GRACE_PERIOD_MS) || 10_000,
+    appInsightsConnectionString: process.env.APPLICATIONINSIGHTS_CONNECTION_STRING ?? '',
   };
 }
 
@@ -93,6 +145,7 @@ function deriveFlags(config: AppConfig): FeatureFlags {
       process.env.MicrosoftAppId &&
       process.env.MicrosoftAppPassword
     ),
+    appInsightsConfigured: Boolean(config.appInsightsConnectionString),
     isDevelopment: process.env.NODE_ENV === 'development',
   };
 }
@@ -110,6 +163,7 @@ export function logFeatureStatus(): void {
   console.log(`  Azure OpenAI:     ${features.openAiConfigured ? '✓ configured' : '✗ missing endpoint'}`);
   console.log(`  Speech/Voice:     ${features.speechConfigured ? '✓ configured' : '✗ no key/region'}`);
   console.log(`  App Identity:     ${features.appIdentityConfigured ? '✓ credentials set' : '✗ incomplete'}`);
+  console.log(`  App Insights:     ${features.appInsightsConfigured ? '✓ connected' : '✗ no connection string'}`);
   console.log(`  Environment:      ${features.isDevelopment ? 'development' : 'production'}`);
   console.log(`  Base URL:         ${config.baseUrl || '⚠ NOT SET (BASE_URL env var missing)'}`);
   console.log(`  Model:            ${config.openAiDeployment}`);

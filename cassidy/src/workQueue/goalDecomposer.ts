@@ -5,6 +5,7 @@
 
 import type { Subtask } from '../workQueue/workQueue';
 import { getSharedOpenAI } from '../auth';
+import { config as appConfig } from '../featureConfig';
 
 function getOpenAI() {
   return getSharedOpenAI();
@@ -31,7 +32,7 @@ export async function decomposeGoal(goal: string): Promise<Subtask[]> {
   const openai = getOpenAI();
   try {
     const controller = new AbortController();
-    const timeoutHandle = setTimeout(() => controller.abort(), 30_000);
+    const timeoutHandle = setTimeout(() => controller.abort(), appConfig.goalDecomposeTimeoutMs);
     const response = await openai.chat.completions.create(
       {
         model: process.env.AZURE_OPENAI_DEPLOYMENT ?? 'gpt-5',
