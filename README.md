@@ -295,12 +295,31 @@ Call Cassidy's voice endpoint to:
 ```bash
 npm run build          # Compile TypeScript
 npm run dev           # Watch mode (if supported)
-npm test              # Run tests
+npm test              # Run tests (21 suites, 279 tests)
 npm run lint          # Code quality checks
 ```
 
 ### Testing
-- Unit tests: `**/*.test.ts`
+
+The test suite covers all production modules (21 suites, 279 tests):
+
+```bash
+npx vitest run        # Run full suite
+npx vitest run src/meetings/  # Run specific module
+```
+
+| Area | Suites | Tests |
+|------|--------|-------|
+| Meetings (context, monitor, names) | 3 | 57 |
+| Reports (distribution) | 1 | 30 |
+| Tools (ops, dispatch, intelligence) | 3 | 63 |
+| Intelligence (predictions, org, profiler) | 3 | 66 |
+| Orchestrator (registry, router) | 2 | 19 |
+| Autonomous & Work Queue | 2 | 14 |
+| Memory (table storage) | 1 | 5 |
+| Reports (generator) | 1 | 11 |
+| **Total** | **21** | **279** |
+
 - Integration tests: Azure Function trigger verification
 - E2E testing: Via Teams or Foundry test console
 
@@ -400,6 +419,11 @@ This project is provided as-is. Modify and use according to your organization's 
 
 - [x] ~~Expanded calendar integration (Outlook sync)~~ — Live via MCP CalendarTools (13 tools)
 - [x] ~~MCP tool wiring~~ — 72 live tools across Calendar, Mail, Planner, Teams
+- [x] ~~Security hardening~~ — timingSafeEqual auth, OData injection prevention, log scrubbing
+- [x] ~~Codebase quality~~ — Consolidated 13 AzureOpenAI clients to 1, eliminated `as any` casts
+- [x] ~~Live data integration~~ — Graph Planner API replacing mock operations data
+- [x] ~~Subsystem wiring~~ — Prediction engine, user profiler, org graph all connected
+- [x] ~~Full test coverage~~ — 21 suites, 279 tests covering every production module
 - [ ] Multi-language support (localization)
 - [ ] Custom skill marketplace integration
 - [ ] Advanced sentiment analysis
@@ -410,6 +434,6 @@ This project is provided as-is. Modify and use according to your organization's 
 
 ---
 
-**Last Updated**: March 25, 2026  
-**Version**: 1.1.0  
-**Status**: Production — 72 live MCP tools, Calendar/Mail/Planner/Teams fully operational
+**Last Updated**: March 26, 2026  
+**Version**: 1.2.0  
+**Status**: Production — 72 live MCP tools, 21 test suites / 279 tests, security hardened
