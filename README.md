@@ -1,12 +1,12 @@
 # Cassidy — Enterprise Operations Manager
 
-![Tests](https://img.shields.io/badge/tests-314%20passed-brightgreen)
-![Suites](https://img.shields.io/badge/suites-25-blue)
+![Tests](https://img.shields.io/badge/tests-372%20passed-brightgreen)
+![Suites](https://img.shields.io/badge/suites-29-blue)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
 ![Platform](https://img.shields.io/badge/platform-Microsoft%20Teams-6264A7)
 ![AI](https://img.shields.io/badge/model-GPT--5-orange)
 ![MCP Tools](https://img.shields.io/badge/MCP%20tools-72%20live-green)
-![Version](https://img.shields.io/badge/version-1.4.0-blue)
+![Version](https://img.shields.io/badge/version-1.5.0-blue)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)
 ![Observability](https://img.shields.io/badge/telemetry-App%20Insights-68217A)
 
@@ -393,14 +393,14 @@ Call Cassidy's voice endpoint to:
 ```bash
 npm run build          # Compile TypeScript
 npm run dev           # Watch mode (if supported)
-npm test              # Run tests (25 suites, 314 tests)
+npm test              # Run tests (29 suites, 372 tests)
 npm run lint          # Code quality checks (ESLint, zero warnings)
 npm run test:coverage # Run tests with V8 coverage report
 ```
 
 ### Testing
 
-The test suite covers all production modules (25 suites, 314 tests):
+The test suite covers all production modules (29 suites, 372 tests):
 
 ```bash
 npx vitest run        # Run full suite
@@ -418,7 +418,11 @@ npx vitest run src/meetings/  # Run specific module
 | Memory (table storage) | 1 | 5 |
 | Reports (generator) | 1 | 11 |
 | Core (featureConfig, auth, persona, telemetry) | 4 | 35 |
-| **Total** | **25** | **314** |
+| Integration (E2E pipeline) | 1 | 10 |
+| Retry & Circuit Breaker | 1 | 23 |
+| Adaptive Cards | 1 | 15 |
+| Conversation Memory | 1 | 11 |
+| **Total** | **29** | **372** |
 
 - Integration tests: Azure Function trigger verification
 - E2E testing: Via Teams or Foundry test console
@@ -506,7 +510,7 @@ For a complete walkthrough of all features with step-by-step test scenarios, exp
 
 ## Support & Documentation
 
-- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (20 deploys)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (21 deploys)
 - **Testing Guide**: [TESTING.md](TESTING.md) - Complete test suite with expected outcomes
 - **Test Results**: [TEST_RESULTS.md](TEST_RESULTS.md) - Latest live test results and deploy status
 - **Deployment Issues**: See [SKILL.md](SKILL.md) for detailed troubleshooting
@@ -525,22 +529,24 @@ This project is provided as-is. Modify and use according to your organization's 
 - [x] ~~Codebase quality~~ — Consolidated 13 AzureOpenAI clients to 1, eliminated `as any` casts
 - [x] ~~Live data integration~~ — Graph Planner API replacing mock operations data
 - [x] ~~Subsystem wiring~~ — Prediction engine, user profiler, org graph all connected
-- [x] ~~Full test coverage~~ — 25 suites, 314 tests covering every production module
+- [x] ~~Full test coverage~~ — 29 suites, 372 tests covering every production module
 - [x] ~~CI/CD Pipeline~~ — GitHub Actions: lint, type-check, test with coverage on every push/PR
 - [x] ~~Application Insights~~ — Telemetry module with OpenAI/tool call tracking, exception tracing
 - [x] ~~Environment configuration~~ — 15 timeouts/intervals extracted to env-configurable AppConfig
 - [x] ~~Infrastructure as Code~~ — Bicep template: App Service, Storage, App Insights, role assignments
 - [x] ~~ESLint integration~~ — Zero-warning TypeScript linting with flat config
+- [x] ~~Adaptive Card responses~~ — Rich task lists, approvals, reports, and health cards in Teams
+- [x] ~~Error recovery~~ — Retry with exponential backoff + circuit breakers for OpenAI, Graph, MCP
+- [x] ~~SharePoint MCP server integration~~
+- [x] ~~OneDrive MCP server integration~~
 - [ ] Multi-language support (localization)
 - [ ] Custom skill marketplace integration
 - [ ] Advanced sentiment analysis
 - [ ] Custom Azure OpenAI models support
 - [ ] Graph connector support for custom data sources
-- [ ] SharePoint MCP server integration
-- [ ] OneDrive MCP server integration
 
 ---
 
 **Last Updated**: March 26, 2026  
-**Version**: 1.4.0  
-**Status**: Production — 72 live MCP tools, 25 test suites / 314 tests, CI pipeline, App Insights telemetry, Bicep IaC
+**Version**: 1.5.0  
+**Status**: Production — 72+ live MCP tools (6 servers), 29 test suites / 372 tests, retry/circuit breakers, Adaptive Cards, CI pipeline, App Insights

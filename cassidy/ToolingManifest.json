@@ -27,6 +27,20 @@
       "url": "https://agent365.svc.cloud.microsoft/agents/servers/mcp_TeamsServer",
       "scope": "McpServers.Teams.All",
       "audience": "ea9ffc3e-8a23-4a7d-836d-234d7c7565c1"
+    },
+    {
+      "mcpServerName": "mcp_SharePointServer",
+      "mcpServerUniqueName": "mcp_SharePointServer",
+      "url": "https://agent365.svc.cloud.microsoft/agents/servers/mcp_SharePointServer",
+      "scope": "McpServers.SharePoint.All",
+      "audience": "ea9ffc3e-8a23-4a7d-836d-234d7c7565c1"
+    },
+    {
+      "mcpServerName": "mcp_OneDriveServer",
+      "mcpServerUniqueName": "mcp_OneDriveServer",
+      "url": "https://agent365.svc.cloud.microsoft/agents/servers/mcp_OneDriveServer",
+      "scope": "McpServers.OneDrive.All",
+      "audience": "ea9ffc3e-8a23-4a7d-836d-234d7c7565c1"
     }
   ]
 }

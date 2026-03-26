@@ -27,6 +27,8 @@ const CONFIGURED_SERVERS = new Set([
   'mcp_PlannerServer',
   'mcp_MailTools',
   'mcp_TeamsServer',
+  'mcp_SharePointServer',
+  'mcp_OneDriveServer',
 ]);
 
 let _toolDefinitionCache: ChatCompletionTool[] | null = null;

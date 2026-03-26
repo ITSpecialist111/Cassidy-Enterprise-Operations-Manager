@@ -25,9 +25,12 @@ import { seedDefaultAgents } from './orchestrator/agentRegistry';
 import { config, features, logFeatureStatus } from './featureConfig';
 import { initTelemetry, flushTelemetry } from './telemetry';
 import { timingSafeEqual } from 'crypto';
+import { openAiCircuit, graphCircuit, mcpCircuit } from './retry';
 
 // Initialise Application Insights early (before route handlers)
 initTelemetry();
+
+const startTime = Date.now();
 
 /** Constant-time secret comparison — prevents timing side-channel attacks. */
 function verifySecret(provided: unknown): boolean {
@@ -47,14 +50,25 @@ server.use(express.json());
 
 // Health endpoint (no auth required — needed for App Service warmup probe)
 server.get('/api/health', (_req, res: Response) => {
+  const uptimeMs = Date.now() - startTime;
+  const uptimeH = (uptimeMs / 3_600_000).toFixed(1);
+
   res.status(200).json({
     status: 'healthy',
     agent: 'Cassidy',
+    version: '1.5.0',
+    uptimeHours: Number(uptimeH),
     features: {
       mcp: features.mcpAvailable,
       speech: features.speechConfigured,
       openai: features.openAiConfigured,
       appIdentity: features.appIdentityConfigured,
+      appInsights: features.appInsightsConfigured,
+    },
+    circuits: {
+      openAi: openAiCircuit.getState(),
+      graph: graphCircuit.getState(),
+      mcp: mcpCircuit.getState(),
     },
     timestamp: new Date().toISOString(),
   });

@@ -28,6 +28,8 @@ import { extractMemories, recall } from './memory/longTermMemory';
 import { getUserInsight } from './intelligence/userProfiler';
 import { config as appConfig, features } from './featureConfig';
 import { trackOpenAiCall, trackToolCall, trackException } from './telemetry';
+import { withRetry, openAiCircuit, isTransientError } from './retry';
+import { tryBuildCardFromReply } from './adaptiveCards';
 
 // State interfaces
 interface ConversationData {
@@ -224,20 +226,35 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
       let response;
       let llmStart: number;
       try {
-        const controller = new AbortController();
-        const timeoutHandle = setTimeout(() => controller.abort(), OPENAI_CALL_TIMEOUT_MS);
         llmStart = Date.now();
-        response = await openai.chat.completions.create(
-          {
-            model: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
-            messages,
-            tools: mergedTools,
-            tool_choice: 'auto',
-            max_completion_tokens: 4000,
-          },
-          { signal: controller.signal },
+        response = await openAiCircuit.execute(() =>
+          withRetry(async () => {
+            const controller = new AbortController();
+            const timeoutHandle = setTimeout(() => controller.abort(), OPENAI_CALL_TIMEOUT_MS);
+            try {
+              const res = await openai.chat.completions.create(
+                {
+                  model: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
+                  messages,
+                  tools: mergedTools,
+                  tool_choice: 'auto',
+                  max_completion_tokens: 4000,
+                },
+                { signal: controller.signal },
+              );
+              clearTimeout(timeoutHandle);
+              return res;
+            } catch (err) {
+              clearTimeout(timeoutHandle);
+              throw err;
+            }
+          }, {
+            maxAttempts: 2,
+            baseDelayMs: 2000,
+            retryIf: isTransientError,
+            onRetry: (attempt, delay) => console.warn(`[Cassidy] OpenAI retry #${attempt} in ${delay}ms`),
+          }),
         );
-        clearTimeout(timeoutHandle);
         trackOpenAiCall(Date.now() - llmStart, true, appConfig.openAiDeployment);
       } catch (apiErr) {
         trackOpenAiCall(Date.now() - llmStart!, false, appConfig.openAiDeployment);
@@ -302,7 +319,17 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     await saveHistory(convId, history);
     clearInterval(typingInterval);
     try {
-      await context.sendActivity(reply);
+      // Try sending as an Adaptive Card for structured content; fall back to plain text
+      const card = tryBuildCardFromReply(reply);
+      if (card) {
+        await context.sendActivity({
+          type: 'message',
+          text: reply,
+          attachments: [card],
+        } as import('@microsoft/agents-activity').Activity);
+      } else {
+        await context.sendActivity(reply);
+      }
     } catch (sendErr: unknown) {
       console.error('sendActivity error:', sendErr);
     }

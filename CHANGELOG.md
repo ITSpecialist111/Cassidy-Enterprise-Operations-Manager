@@ -2,6 +2,18 @@
 
 All notable changes to the Cassidy Enterprise Operations Manager are documented here.
 
+## [1.5.0] — 2026-03-26
+
+### Deploy #21 — Integration Tests, Retry/Circuit Breakers, Adaptive Cards, SharePoint/OneDrive MCP, Enhanced Health
+- **Integration test suite**: `integration.test.ts` — 10 E2E smoke tests exercising the full agent pipeline (tool dispatch, tool schema validation, history wiring, notification detection, goal detection, telemetry hooks)
+- **Retry utility & circuit breakers**: `retry.ts` with `withRetry()` (exponential backoff + jitter), `isTransientError()` detection (429/503/timeout/ECONNRESET), `CircuitBreaker` class with open/half-open/closed states. 23 tests in `retry.test.ts`
+- **Adaptive Card builder**: `adaptiveCards.ts` — typed card factories for task lists, status summaries, approval requests (with Approve/Reject buttons), reports, and health dashboards. Auto-detection in agent response pipeline via `tryBuildCardFromReply()`. 15 tests in `adaptiveCards.test.ts`
+- **SharePoint + OneDrive MCP servers**: Added `mcp_SharePointServer` and `mcp_OneDriveServer` to `CONFIGURED_SERVERS` and `ToolingManifest.json` — 6 MCP servers total (Calendar, Planner, Mail, Teams, SharePoint, OneDrive)
+- **Conversation memory tests**: `conversationMemory.test.ts` — 11 tests covering load/save, key sanitization, history trimming to 30 messages, graceful auth failure handling
+- **Enhanced health endpoint**: `/api/health` now returns version, uptimeHours, appInsights flag, and circuit breaker states (openAi, graph, mcp)
+- **OpenAI retry + circuit breaker**: Wrapped LLM calls with `withRetry()` (2 attempts, 2s base delay) and `openAiCircuit` — auto-opens after 3 consecutive transient failures, resets after 30s
+- **Test count**: 25 → 29 suites, 314 → 372 tests — all green
+
 ## [1.4.0] — 2026-03-26
 
 ### Deploy #20 — Telemetry Tests, CI Hardening, Core Tests, Env Docs
