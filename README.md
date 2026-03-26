@@ -1,12 +1,12 @@
 # Cassidy — Enterprise Operations Manager
 
-![Tests](https://img.shields.io/badge/tests-372%20passed-brightgreen)
-![Suites](https://img.shields.io/badge/suites-29-blue)
+![Tests](https://img.shields.io/badge/tests-467%20passed-brightgreen)
+![Suites](https://img.shields.io/badge/suites-38-blue)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
 ![Platform](https://img.shields.io/badge/platform-Microsoft%20Teams-6264A7)
 ![AI](https://img.shields.io/badge/model-GPT--5-orange)
 ![MCP Tools](https://img.shields.io/badge/MCP%20tools-72%20live-green)
-![Version](https://img.shields.io/badge/version-1.5.0-blue)
+![Version](https://img.shields.io/badge/version-1.7.0-blue)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)
 ![Observability](https://img.shields.io/badge/telemetry-App%20Insights-68217A)
 
@@ -150,6 +150,15 @@ flowchart TB
 | **Proactive Engine** | Event-driven workflows, user notifications | `proactive/proactiveEngine.ts` |
 | **Work Queue** | Goal decomposition, dependency resolution | `workQueue/goalDecomposer.ts` |
 | **Tools** | Live MCP integration — 72 tools across Calendar (13), Mail (22), Planner (10), Teams (27) | `tools/mcpToolSetup.ts` |
+| **Input Sanitizer** | Prompt injection guard — 5 pattern categories, control char stripping | `inputSanitizer.ts` |
+| **Tool Cache** | LRU cache (500 entries, 60s TTL) for read-only tool results | `toolCache.ts` |
+| **Analytics** | In-memory conversation metrics, response times, tool usage | `analytics.ts` |
+| **Webhook Manager** | Graph subscription CRUD with auto-renewal loop | `webhookManager.ts` |
+| **Conversation Export** | Audit trail with date filtering and PII redaction | `conversationExport.ts` |
+| **Correlation IDs** | AsyncLocalStorage-based request-scoped distributed tracing | `correlation.ts` |
+| **Rate Limiter** | Per-user sliding-window rate limiting | `rateLimiter.ts` |
+| **Structured Logger** | JSON-formatted logging with module tagging | `logger.ts` |
+| **LRU Cache** | Generic LRU cache with TTL for user insights and memory | `lruCache.ts` |
 
 ## Features
 
@@ -164,6 +173,15 @@ flowchart TB
 - User profiling (preferences, availability, expertise)
 - Predictive task routing based on historical patterns
 - Meeting transcription analysis with action item extraction
+- Conversation analytics — avg/p95 response times, top tools/users, rate-limited/degraded counts
+- Real-time ops dashboard via `/api/analytics` endpoint
+
+### 🔒 Security & Compliance
+- Input sanitization — prompt injection guard (5 pattern categories + control char stripping)
+- Per-user sliding-window rate limiting with configurable thresholds
+- Conversation export with PII redaction (email, phone, SSN, card numbers)
+- Request correlation IDs (AsyncLocalStorage) for distributed tracing
+- Structured JSON logging with module tagging
 
 ### 💬 Communication
 - Multi-channel delivery (Teams, email, voice)
@@ -393,14 +411,14 @@ Call Cassidy's voice endpoint to:
 ```bash
 npm run build          # Compile TypeScript
 npm run dev           # Watch mode (if supported)
-npm test              # Run tests (29 suites, 372 tests)
+npm test              # Run tests (38 suites, 467 tests)
 npm run lint          # Code quality checks (ESLint, zero warnings)
 npm run test:coverage # Run tests with V8 coverage report
 ```
 
 ### Testing
 
-The test suite covers all production modules (29 suites, 372 tests):
+The test suite covers all production modules (38 suites, 467 tests):
 
 ```bash
 npx vitest run        # Run full suite
@@ -422,7 +440,16 @@ npx vitest run src/meetings/  # Run specific module
 | Retry & Circuit Breaker | 1 | 23 |
 | Adaptive Cards | 1 | 15 |
 | Conversation Memory | 1 | 11 |
-| **Total** | **29** | **372** |
+| Logger | 1 | 7 |
+| Rate Limiter | 1 | 10 |
+| LRU Cache | 1 | 13 |
+| Input Sanitizer | 1 | 16 |
+| Tool Cache | 1 | 9 |
+| Analytics | 1 | 12 |
+| Webhook Manager | 1 | 8 |
+| Conversation Export | 1 | 11 |
+| Correlation IDs | 1 | 9 |
+| **Total** | **38** | **467** |
 
 - Integration tests: Azure Function trigger verification
 - E2E testing: Via Teams or Foundry test console
@@ -510,7 +537,7 @@ For a complete walkthrough of all features with step-by-step test scenarios, exp
 
 ## Support & Documentation
 
-- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (21 deploys)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (23 deploys)
 - **Testing Guide**: [TESTING.md](TESTING.md) - Complete test suite with expected outcomes
 - **Test Results**: [TEST_RESULTS.md](TEST_RESULTS.md) - Latest live test results and deploy status
 - **Deployment Issues**: See [SKILL.md](SKILL.md) for detailed troubleshooting
@@ -539,6 +566,17 @@ This project is provided as-is. Modify and use according to your organization's 
 - [x] ~~Error recovery~~ — Retry with exponential backoff + circuit breakers for OpenAI, Graph, MCP
 - [x] ~~SharePoint MCP server integration~~
 - [x] ~~OneDrive MCP server integration~~
+- [x] ~~Structured JSON logger~~ — Replaced console.* with structured logger across agent + index
+- [x] ~~Per-user rate limiting~~ — Sliding-window rate limiter with configurable thresholds
+- [x] ~~LRU cache with TTL~~ — Generic cache for user profiles and memory recall
+- [x] ~~Approval action handler~~ — Adaptive Card invoke handler for Approve/Reject buttons
+- [x] ~~Graceful degradation~~ — Fallback responses when OpenAI circuit is open
+- [x] ~~Input sanitization~~ — Prompt injection guard with 5 pattern categories
+- [x] ~~Tool result caching~~ — LRU cache for 12 read-only Graph/MCP tools (60s TTL)
+- [x] ~~Conversation analytics~~ — /api/analytics endpoint with real-time ops metrics
+- [x] ~~Webhook subscription manager~~ — Graph subscription CRUD with auto-renewal
+- [x] ~~Conversation export~~ — /api/conversations/export with PII redaction
+- [x] ~~Request correlation IDs~~ — AsyncLocalStorage-based distributed tracing
 - [ ] Multi-language support (localization)
 - [ ] Custom skill marketplace integration
 - [ ] Advanced sentiment analysis
@@ -548,5 +586,5 @@ This project is provided as-is. Modify and use according to your organization's 
 ---
 
 **Last Updated**: March 26, 2026  
-**Version**: 1.5.0  
-**Status**: Production — 72+ live MCP tools (6 servers), 29 test suites / 372 tests, retry/circuit breakers, Adaptive Cards, CI pipeline, App Insights
+**Version**: 1.7.0  
+**Status**: Production — 72+ live MCP tools (6 servers), 38 test suites / 467 tests, input sanitization, tool caching, analytics, correlation IDs, rate limiting, structured logging, retry/circuit breakers, Adaptive Cards, CI pipeline, App Insights

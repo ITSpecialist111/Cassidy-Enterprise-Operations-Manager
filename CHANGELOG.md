@@ -2,6 +2,29 @@
 
 All notable changes to the Cassidy Enterprise Operations Manager are documented here.
 
+## [1.7.0] — 2026-03-26
+
+### Deploy #23 — Input Sanitization, Tool Caching, Analytics, Webhooks, Conversation Export, Correlation IDs
+- **Input sanitizer**: `inputSanitizer.ts` — 5 injection-pattern categories (system_override, role_override, prompt_extraction, instruction_injection, delimiter_attack) plus control-character stripping. Dual-layer protection (our guard + Azure OpenAI content filter). 16 tests in `inputSanitizer.test.ts`
+- **Tool result cache**: `toolCache.ts` — LRU cache (500 entries, 60s TTL) wrapping 12 read-only MCP tools (ListCalendarView, GetUserProfile, etc.) via `withToolCache()`. Skips write tools automatically. 9 tests in `toolCache.test.ts`
+- **Conversation analytics**: `analytics.ts` — In-memory conversation metrics: avg/p95 response times, top-5 tools, top-5 users, rate-limited / degraded / sanitised counts. Exposed via `/api/analytics`. 12 tests in `analytics.test.ts`
+- **Webhook subscription manager**: `webhookManager.ts` — Graph subscription CRUD (create, renew, delete, list) with 30-min auto-renewal loop. Integrated into server startup/shutdown lifecycle. 8 tests in `webhookManager.test.ts`
+- **Conversation export**: `conversationExport.ts` — `/api/conversations/export` endpoint with date-range filtering, PII redaction (email, phone, SSN, card numbers), JSON download. 11 tests in `conversationExport.test.ts`
+- **Correlation IDs**: `correlation.ts` — AsyncLocalStorage-based request-scoped correlation IDs. `withCorrelation()` wrapper injected into agent turn handler. All log lines include `correlationId`. 9 tests in `correlation.test.ts`
+- **Health v1.7.0**: Added toolResults, rateLimiter.trackedUsers, webhooks fields
+- **Test count**: 32 → 38 suites, 402 → 467 tests — all green
+
+## [1.6.0] — 2026-03-26
+
+### Deploy #22 — Approval Handler, Structured Logger, Rate Limiter, Graceful Degradation, LRU Cache
+- **Approval action handler**: Adaptive Card `Action.Execute` invoke handler for Approve/Reject buttons with `verb`-based dispatch and confirmation cards
+- **Structured JSON logger**: `logger.ts` — Replaced all `console.*` calls with tagged structured logger (`createLogger(module)`). JSON output with timestamp, level, module, correlationId. 7 tests in `logger.test.ts`
+- **Per-user rate limiter**: `rateLimiter.ts` — Sliding-window rate limiting (100 requests/60s default, configurable). Returns 429 with retry-after header. 10 tests in `rateLimiter.test.ts`
+- **Graceful degradation**: Fallback responses when OpenAI circuit breaker is open — returns helpful "I'm temporarily limited" message instead of error
+- **LRU cache**: `lruCache.ts` — Generic LRU cache with TTL, used for user profile insights and memory recall. 13 tests in `lruCache.test.ts`
+- **Health v1.6.0**: Added cache stats (size, hits, misses, hitRate) and rate limiter metrics
+- **Test count**: 29 → 32 suites, 372 → 402 tests — all green
+
 ## [1.5.0] — 2026-03-26
 
 ### Deploy #21 — Integration Tests, Retry/Circuit Breakers, Adaptive Cards, SharePoint/OneDrive MCP, Enhanced Health
