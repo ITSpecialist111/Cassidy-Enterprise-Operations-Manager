@@ -85,7 +85,6 @@ const MCP_PLATFORM_SCOPE = 'ea9ffc3e-8a23-4a7d-836d-234d7c7565c1/.default';
  */
 async function getOboToolHeaders(context: TurnContext): Promise<Record<string, string>> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { agentApplication } = require('../agent') as {
       agentApplication: { authorization: import('@microsoft/agents-hosting').Authorization };
     };
@@ -127,12 +126,11 @@ async function getServerConfigs(context?: TurnContext): Promise<MCPServerConfig[
   if (_serverConfigCache && now < _serverConfigExpiry) return _serverConfigCache;
 
   const blueprintId = process.env.MicrosoftAppId ?? process.env.agent_id ?? '';
-  let discovered: MCPServerConfig[] = [];
+  let discovered: MCPServerConfig[];
 
   try {
     if (context) {
       // Preferred: TurnContext overload — performs OBO token exchange automatically.
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { agentApplication } = require('../agent') as { agentApplication: { authorization: import('@microsoft/agents-hosting').Authorization } };
       discovered = await mcpService.listToolServers(
         context,

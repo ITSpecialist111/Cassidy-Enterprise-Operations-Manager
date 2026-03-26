@@ -27,6 +27,7 @@ import { recordInteraction, type InteractionSummary } from './intelligence/userP
 import { extractMemories, recall } from './memory/longTermMemory';
 import { getUserInsight } from './intelligence/userProfiler';
 import { config as appConfig, features } from './featureConfig';
+import { trackOpenAiCall, trackToolCall, trackException } from './telemetry';
 
 // State interfaces
 interface ConversationData {
@@ -82,7 +83,7 @@ export const agentApplication = new AgentApplication<AppTurnState>({
   },
 });
 
-agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, state: AppTurnState) => {
+agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, _state: AppTurnState) => {
   const userMessage = context.activity.text?.trim() || '';
   const userName = context.activity.from?.name || 'there';
   const convId = context.activity.conversation?.id ?? '';
@@ -221,9 +222,11 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
 
     for (let i = 0; i < maxIterations; i++) {
       let response;
+      let llmStart: number;
       try {
         const controller = new AbortController();
         const timeoutHandle = setTimeout(() => controller.abort(), OPENAI_CALL_TIMEOUT_MS);
+        llmStart = Date.now();
         response = await openai.chat.completions.create(
           {
             model: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-5',
@@ -235,7 +238,9 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           { signal: controller.signal },
         );
         clearTimeout(timeoutHandle);
+        trackOpenAiCall(Date.now() - llmStart, true, appConfig.openAiDeployment);
       } catch (apiErr) {
+        trackOpenAiCall(Date.now() - llmStart!, false, appConfig.openAiDeployment);
         if (apiErr instanceof Error && (apiErr.name === 'AbortError' || apiErr.message.includes('abort'))) {
           console.error(`[Cassidy] OpenAI API timeout after ${OPENAI_CALL_TIMEOUT_MS / 1000}s on iteration ${i}`);
           reply = `⏱️ I'm taking longer than expected to work through this. Let me try a simpler approach — could you ask a more specific question?`;
@@ -267,6 +272,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           if (toolCall.type !== 'function') {
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: '{}' };
           }
+          const toolStart = Date.now();
           try {
             const params = JSON.parse(toolCall.function.arguments || '{}');
             // Safe timeout: clearTimeout on settle prevents dangling rejection
@@ -279,8 +285,10 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
                 .then(r => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } })
                 .catch(e => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } });
             });
+            trackToolCall(toolCall.function.name, Date.now() - toolStart, true);
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: result };
           } catch (parseErr) {
+            trackToolCall(toolCall.function.name, Date.now() - toolStart, false);
             const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
             console.error(`[Cassidy] Tool ${toolCall.function.name} failed:`, errMsg);
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: JSON.stringify({ error: errMsg }) };
@@ -333,6 +341,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     clearInterval(typingInterval);
     const errMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     console.error('OpenAI/tool error:', err);
+    if (err instanceof Error) trackException(err, { module: 'agent', userId: context.activity.from?.id ?? '' });
     try {
       await context.sendActivity(`Sorry, I encountered an error while processing your request. Please try again.\n\n**Debug:** ${errMsg}`);
     } catch (sendErr: unknown) {
@@ -341,7 +350,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   }
 });
 
-agentApplication.onActivity(ActivityTypes.InstallationUpdate, async (context: TurnContext, state: AppTurnState) => {
+agentApplication.onActivity(ActivityTypes.InstallationUpdate, async (context: TurnContext, _state: AppTurnState) => {
   if (context.activity.action === 'add') {
     try {
       await context.sendActivity(

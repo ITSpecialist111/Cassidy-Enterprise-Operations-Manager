@@ -33,7 +33,7 @@ import {
   getWorkItem,
   removeWorkItem,
 } from './workQueue';
-import { upsertEntity, getEntity, deleteEntity } from '../memory/tableStorage';
+import { upsertEntity, deleteEntity } from '../memory/tableStorage';
 
 // ---------------------------------------------------------------------------
 // Tests

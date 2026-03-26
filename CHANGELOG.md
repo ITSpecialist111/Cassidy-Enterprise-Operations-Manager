@@ -2,6 +2,18 @@
 
 All notable changes to the Cassidy Enterprise Operations Manager are documented here.
 
+## [1.4.0] — 2026-03-26
+
+### Deploy #20 — Telemetry Tests, CI Hardening, Core Tests, Env Docs
+- **Telemetry test suite**: `telemetry.test.ts` — 9 tests covering no-op mode (all helper functions return safely without App Insights) and SDK initialisation path
+- **CI hardening**: ESLint flat config (`eslint.config.mjs`) with `typescript-eslint`, zero-warning policy (`--max-warnings 0`), `npm audit` step, `@vitest/coverage-v8` coverage reporting in CI
+- **Core module tests**: `featureConfig.test.ts` (10 tests), `auth.test.ts` (6 tests), `persona.test.ts` (10 tests) — 26 new tests covering authentication, system prompt integrity, and centralised config
+- **Telemetry wiring**: `trackOpenAiCall()` with timing around LLM calls, `trackToolCall()` with timing around tool execution, `trackException()` in global error handler — all in `agent.ts`
+- **Lint cleanup**: Fixed 16 ESLint warnings across 13 files — unused vars/imports, `any` types, useless regex escapes, stale eslint-disable comments, dead code removal
+- **.env.template**: Added 30+ new env vars — Speech, Storage, Planner, App Insights, Proactive Engine, and all 15 timeout/interval tuning knobs with documented defaults
+- **README update**: Badges (314 tests / 25 suites / v1.4.0 / CI / App Insights), roadmap items checked off, updated build commands
+- **Test count**: 21 → 25 suites, 279 → 314 tests — all green
+
 ## [1.3.0] — 2026-03-26
 
 ### Deploy #19 — CI Pipeline, App Insights, Config Extraction, Bicep IaC

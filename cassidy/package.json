@@ -9,7 +9,9 @@
     "build": "tsc",
     "dev": "nodemon",
     "clean": "rimraf dist",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src --max-warnings 0"
   },
   "dependencies": {
     "@azure/data-tables": "^13.3.2",
@@ -32,9 +34,13 @@
     "applicationinsights": "^3.14.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitest/coverage-v8": "^4.1.1",
+    "eslint": "^10.1.0",
     "nodemon": "*",
     "rimraf": "*",
     "ts-node": "*",
+    "typescript-eslint": "^8.57.2",
     "vitest": "^4.1.0"
   }
 }

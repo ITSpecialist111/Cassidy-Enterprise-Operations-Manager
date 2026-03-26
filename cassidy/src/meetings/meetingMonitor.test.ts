@@ -18,7 +18,7 @@ function detectActionItemPhrase(text: string): boolean {
 function detectTopicPhrase(text: string): string | null {
   const patterns = [
     /\b(?:let's talk about|moving on to|next topic|let's discuss|regarding|about the)\s+(.{5,50})/i,
-    /\b(?:agenda item|next up)\s*[:\-]?\s*(.{5,50})/i,
+    /\b(?:agenda item|next up)\s*[:-]?\s*(.{5,50})/i,
   ];
   for (const p of patterns) {
     const match = text.match(p);

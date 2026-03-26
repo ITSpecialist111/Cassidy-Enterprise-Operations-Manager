@@ -1,12 +1,14 @@
 # Cassidy — Enterprise Operations Manager
 
-![Tests](https://img.shields.io/badge/tests-279%20passed-brightgreen)
-![Suites](https://img.shields.io/badge/suites-21-blue)
+![Tests](https://img.shields.io/badge/tests-314%20passed-brightgreen)
+![Suites](https://img.shields.io/badge/suites-25-blue)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
 ![Platform](https://img.shields.io/badge/platform-Microsoft%20Teams-6264A7)
 ![AI](https://img.shields.io/badge/model-GPT--5-orange)
 ![MCP Tools](https://img.shields.io/badge/MCP%20tools-72%20live-green)
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.4.0-blue)
+![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)
+![Observability](https://img.shields.io/badge/telemetry-App%20Insights-68217A)
 
 A sophisticated autonomous agent for enterprise task coordination, project tracking, approvals, and team workflows. Built on Microsoft Agent Framework with live MCP (Model Context Protocol) integration for Calendar, Mail, Planner, and Teams via the Agent 365 Work IQ platform.
 
@@ -391,13 +393,14 @@ Call Cassidy's voice endpoint to:
 ```bash
 npm run build          # Compile TypeScript
 npm run dev           # Watch mode (if supported)
-npm test              # Run tests (21 suites, 279 tests)
-npm run lint          # Code quality checks
+npm test              # Run tests (25 suites, 314 tests)
+npm run lint          # Code quality checks (ESLint, zero warnings)
+npm run test:coverage # Run tests with V8 coverage report
 ```
 
 ### Testing
 
-The test suite covers all production modules (21 suites, 279 tests):
+The test suite covers all production modules (25 suites, 314 tests):
 
 ```bash
 npx vitest run        # Run full suite
@@ -414,7 +417,8 @@ npx vitest run src/meetings/  # Run specific module
 | Autonomous & Work Queue | 2 | 14 |
 | Memory (table storage) | 1 | 5 |
 | Reports (generator) | 1 | 11 |
-| **Total** | **21** | **279** |
+| Core (featureConfig, auth, persona, telemetry) | 4 | 35 |
+| **Total** | **25** | **314** |
 
 - Integration tests: Azure Function trigger verification
 - E2E testing: Via Teams or Foundry test console
@@ -502,7 +506,7 @@ For a complete walkthrough of all features with step-by-step test scenarios, exp
 
 ## Support & Documentation
 
-- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (18 deploys)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (20 deploys)
 - **Testing Guide**: [TESTING.md](TESTING.md) - Complete test suite with expected outcomes
 - **Test Results**: [TEST_RESULTS.md](TEST_RESULTS.md) - Latest live test results and deploy status
 - **Deployment Issues**: See [SKILL.md](SKILL.md) for detailed troubleshooting
@@ -521,7 +525,12 @@ This project is provided as-is. Modify and use according to your organization's 
 - [x] ~~Codebase quality~~ — Consolidated 13 AzureOpenAI clients to 1, eliminated `as any` casts
 - [x] ~~Live data integration~~ — Graph Planner API replacing mock operations data
 - [x] ~~Subsystem wiring~~ — Prediction engine, user profiler, org graph all connected
-- [x] ~~Full test coverage~~ — 21 suites, 279 tests covering every production module
+- [x] ~~Full test coverage~~ — 25 suites, 314 tests covering every production module
+- [x] ~~CI/CD Pipeline~~ — GitHub Actions: lint, type-check, test with coverage on every push/PR
+- [x] ~~Application Insights~~ — Telemetry module with OpenAI/tool call tracking, exception tracing
+- [x] ~~Environment configuration~~ — 15 timeouts/intervals extracted to env-configurable AppConfig
+- [x] ~~Infrastructure as Code~~ — Bicep template: App Service, Storage, App Insights, role assignments
+- [x] ~~ESLint integration~~ — Zero-warning TypeScript linting with flat config
 - [ ] Multi-language support (localization)
 - [ ] Custom skill marketplace integration
 - [ ] Advanced sentiment analysis
@@ -533,5 +542,5 @@ This project is provided as-is. Modify and use according to your organization's 
 ---
 
 **Last Updated**: March 26, 2026  
-**Version**: 1.2.0  
-**Status**: Production — 72 live MCP tools, 21 test suites / 279 tests, security hardened
+**Version**: 1.4.0  
+**Status**: Production — 72 live MCP tools, 25 test suites / 314 tests, CI pipeline, App Insights telemetry, Bicep IaC

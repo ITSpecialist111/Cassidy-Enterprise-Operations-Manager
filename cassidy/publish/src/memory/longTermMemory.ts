@@ -146,7 +146,7 @@ export async function recall(query: string, options?: {
   const maxResults = options?.maxResults ?? 5;
 
   // Gather all candidate memories
-  let candidates: MemoryEntry[] = [];
+  let candidates: MemoryEntry[];
 
   if (options?.category) {
     candidates = await listEntities<MemoryEntry>(TABLE, getCategoryPartition(options.category));

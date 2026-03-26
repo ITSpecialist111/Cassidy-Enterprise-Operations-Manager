@@ -30,7 +30,7 @@ vi.mock('./userRegistry', () => ({
       timezone: 'UTC',
     },
   ]),
-  getConversationRefFromProfile: vi.fn((user: any) => {
+  getConversationRefFromProfile: vi.fn((user: { conversationRef: string }) => {
     try { return JSON.parse(user.conversationRef); } catch { return null; }
   }),
   getNotificationPrefsFromProfile: vi.fn(() => ({
@@ -48,7 +48,7 @@ vi.mock('./eventTriggers', () => ({
       name: 'Overdue Tasks',
       cooldownMinutes: 60,
       lastFired: null,
-      evaluate: vi.fn(async (users: any[]) => users.map((u: any) => ({
+      evaluate: vi.fn(async (users: Array<{ rowKey: string }>) => users.map((u: { rowKey: string }) => ({
         targetUserId: u.rowKey,
         triggerName: 'overdue_tasks',
         urgency: 'medium' as const,

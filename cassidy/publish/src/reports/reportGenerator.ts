@@ -12,7 +12,6 @@ import { TurnContext } from '@microsoft/agents-hosting';
 import {
   getTemplate,
   listTemplates,
-  ReportTemplate,
   ReportSection,
   OutputFormat,
 } from './reportTemplates';
@@ -311,7 +310,7 @@ async function createDocument(
   format: OutputFormat,
   title: string,
   content: string,
-  context?: TurnContext,
+  _context?: TurnContext,
 ): Promise<{ fileUrl?: string; fileId?: string } | null> {
   // Map format to MCP tool names
   const toolMap: Record<string, string> = {

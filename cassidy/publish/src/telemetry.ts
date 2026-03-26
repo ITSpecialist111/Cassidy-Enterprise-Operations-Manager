@@ -47,7 +47,6 @@ export function initTelemetry(): void {
 
   try {
     // Dynamic import keeps the dependency optional at runtime
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const appInsights = require('applicationinsights') as typeof import('applicationinsights');
     appInsights.setup(config.appInsightsConnectionString)
       .setAutoCollectRequests(true)

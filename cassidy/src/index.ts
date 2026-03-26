@@ -162,8 +162,10 @@ server.post('/api/calls/notifications', async (req: express.Request, res: Respon
     // Only process notifications for calls we initiated
     const items = req.body?.value;
     if (Array.isArray(items)) {
-      const callIds = items.map((item: any) => item.resourceData?.id).filter(Boolean);
-      if (callIds.length > 0 && !callIds.some((id: string) => getActiveCall(id))) {
+      const callIds = items
+        .map((item: { resourceData?: { id?: string } }) => item.resourceData?.id)
+        .filter((id): id is string => Boolean(id));
+      if (callIds.length > 0 && !callIds.some(id => getActiveCall(id))) {
         res.status(200).json({ status: 'ignored_unknown_call' });
         return;
       }

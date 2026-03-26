@@ -10,7 +10,7 @@
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { getSharedOpenAI } from '../auth';
 import { synthesizeSpeech, isVoiceAvailable } from './speechProcessor';
-import { getActiveCall, playPromptInCall, endCall, type CassidyCall } from './callManager';
+import { getActiveCall, playPromptInCall, type CassidyCall } from './callManager';
 import { getAllTools, executeTool } from '../tools/index';
 
 // ---------------------------------------------------------------------------

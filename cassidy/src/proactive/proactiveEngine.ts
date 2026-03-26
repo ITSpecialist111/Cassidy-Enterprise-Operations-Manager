@@ -17,7 +17,7 @@ import {
   isInQuietHours,
   UserProfile,
 } from './userRegistry';
-import { getAllTriggers, TriggerCondition, OutreachAction } from './eventTriggers';
+import { getAllTriggers, OutreachAction } from './eventTriggers';
 import { runPredictionCycle } from '../intelligence/predictiveEngine';
 import { refreshOrgGraph } from '../intelligence/orgGraph';
 import { initiateCall, getCallByUserId } from '../voice/callManager';

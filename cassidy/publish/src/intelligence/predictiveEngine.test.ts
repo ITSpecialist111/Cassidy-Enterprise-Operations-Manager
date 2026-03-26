@@ -67,7 +67,7 @@ import {
   resolvePrediction,
   getOperationalRiskScore,
 } from './predictiveEngine';
-import { upsertEntity, getEntity, listEntities } from '../memory/tableStorage';
+import { upsertEntity } from '../memory/tableStorage';
 
 // ---------------------------------------------------------------------------
 // Tests

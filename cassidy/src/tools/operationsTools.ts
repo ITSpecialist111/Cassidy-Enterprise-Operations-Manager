@@ -480,18 +480,17 @@ export async function getPendingApprovals(params: { older_than_days?: number; ap
   // If Graph is configured, we query Planner and extract those.
   if (graphConfigured()) {
     try {
-      const [allTasks, buckets, members] = await Promise.all([
+      const [allTasks, buckets, _members] = await Promise.all([
         fetchPlannerTasks(),
         fetchBuckets(),
         resolveMembers(),
       ]);
 
       // Find the approval bucket (case-insensitive, matches "Approvals", "Pending Approval", etc.)
-      let approvalBucketName = '';
       const planId = appConfig.plannerPlanId;
       const rawBuckets = getCached<Map<string, string>>(`buckets_${planId}`) ?? buckets;
       for (const [, name] of rawBuckets) {
-        if (/approval/i.test(name)) { approvalBucketName = name; break; }
+        if (/approval/i.test(name)) { break; }
       }
 
       // Filter tasks that are in the approval bucket and incomplete
