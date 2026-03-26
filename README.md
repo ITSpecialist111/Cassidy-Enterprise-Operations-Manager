@@ -1,5 +1,13 @@
 # Cassidy — Enterprise Operations Manager
 
+![Tests](https://img.shields.io/badge/tests-279%20passed-brightgreen)
+![Suites](https://img.shields.io/badge/suites-21-blue)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
+![Platform](https://img.shields.io/badge/platform-Microsoft%20Teams-6264A7)
+![AI](https://img.shields.io/badge/model-GPT--5-orange)
+![MCP Tools](https://img.shields.io/badge/MCP%20tools-72%20live-green)
+![Version](https://img.shields.io/badge/version-1.2.0-blue)
+
 A sophisticated autonomous agent for enterprise task coordination, project tracking, approvals, and team workflows. Built on Microsoft Agent Framework with live MCP (Model Context Protocol) integration for Calendar, Mail, Planner, and Teams via the Agent 365 Work IQ platform.
 
 ## Overview
@@ -39,6 +47,94 @@ cassidy/
 ├── publish/                      # Azure App Service deployment package
 ├── azure-function-trigger/       # Logic App trigger for scheduled tasks
 └── manifest/                     # Agent manifest & Teams integration
+```
+
+### System Architecture
+
+```mermaid
+flowchart TB
+    subgraph Teams["Microsoft Teams"]
+        User([👤 User])
+        Channel([📢 Channel])
+    end
+
+    subgraph Agent["Cassidy Agent Core"]
+        direction TB
+        AgentTS["agent.ts\nGPT-5 Orchestration\n10-iteration agentic loop"]
+        Persona["persona.ts\nSystem Prompt"]
+    end
+
+    subgraph MCP["MCP Servers (72 live tools)"]
+        direction LR
+        Cal["📅 Calendar\n13 tools"]
+        Mail["📧 Mail\n22 tools"]
+        Plan["📋 Planner\n10 tools"]
+        TeamsS["💬 Teams\n27 tools"]
+    end
+
+    subgraph Intelligence["Intelligence Layer"]
+        direction LR
+        Predict["Predictive\nEngine"]
+        OrgGraph["Org\nGraph"]
+        Profiler["User\nProfiler"]
+    end
+
+    subgraph Autonomous["Autonomous Execution"]
+        direction LR
+        Loop["Autonomous\nLoop"]
+        Queue["Work\nQueue"]
+        Decomp["Goal\nDecomposer"]
+    end
+
+    subgraph Memory["Persistence (Azure Table Storage)"]
+        direction LR
+        Conv["Conversation\nMemory"]
+        LTM["Long-term\nMemory"]
+        Registry["User\nRegistry"]
+    end
+
+    subgraph Orchestrator["Multi-Agent Orchestration"]
+        direction LR
+        AgentReg["Agent\nRegistry"]
+        Router["Task\nRouter"]
+    end
+
+    subgraph Proactive["Proactive Engine"]
+        direction LR
+        Triggers["Event\nTriggers"]
+        Notifier["Proactive\nNotifier"]
+    end
+
+    subgraph Output["Output Channels"]
+        direction LR
+        Reports["📊 Reports"]
+        Voice["🔊 Voice"]
+        Meetings["🎤 Meetings"]
+    end
+
+    User -->|message| AgentTS
+    Channel -->|@mention| AgentTS
+    AgentTS <-->|OBO token exchange| MCP
+    AgentTS --> Intelligence
+    AgentTS --> Autonomous
+    AgentTS <--> Memory
+    AgentTS --> Orchestrator
+    Loop --> Queue
+    Queue --> Decomp
+    Proactive -->|notifications| User
+    Intelligence --> Proactive
+    AgentTS --> Output
+    Notifier -->|Teams/email| User
+
+    style Agent fill:#1a1a2e,color:#fff
+    style MCP fill:#16213e,color:#fff
+    style Intelligence fill:#0f3460,color:#fff
+    style Autonomous fill:#533483,color:#fff
+    style Memory fill:#2c3e50,color:#fff
+    style Orchestrator fill:#1e3799,color:#fff
+    style Proactive fill:#e55039,color:#fff
+    style Output fill:#2c3e50,color:#fff
+    style Teams fill:#6264A7,color:#fff
 ```
 
 ### Key Subsystems
@@ -406,7 +502,9 @@ For a complete walkthrough of all features with step-by-step test scenarios, exp
 
 ## Support & Documentation
 
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (18 deploys)
 - **Testing Guide**: [TESTING.md](TESTING.md) - Complete test suite with expected outcomes
+- **Test Results**: [TEST_RESULTS.md](TEST_RESULTS.md) - Latest live test results and deploy status
 - **Deployment Issues**: See [SKILL.md](SKILL.md) for detailed troubleshooting
 - **API Reference**: [agent.yaml](cassidy/agent.yaml) defines all environment variables
 - **Architecture Deep Dive**: [SKILL.md](SKILL.md) includes error codes and design patterns
