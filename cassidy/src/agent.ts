@@ -33,6 +33,10 @@ import { tryBuildCardFromReply } from './adaptiveCards';
 import { logger } from './logger';
 import { userRateLimiter } from './rateLimiter';
 import { LruCache } from './lruCache';
+import { sanitizeInput } from './inputSanitizer';
+import { getCachedToolResult, cacheToolResult, getToolCacheSize } from './toolCache';
+import { recordConversationMetric } from './analytics';
+import { generateCorrelationId, withCorrelation } from './correlation';
 
 // LRU caches for user profiles and notification preferences (reduces Table Storage calls)
 const userInsightCache = new LruCache<Awaited<ReturnType<typeof getUserInsight>>>(200, 300_000);
@@ -40,6 +44,9 @@ const memoryCache = new LruCache<Awaited<ReturnType<typeof recall>>>(500, 120_00
 
 /** Expose caches for health endpoint reporting */
 export { userInsightCache, memoryCache };
+
+/** Expose tool cache size for health endpoint */
+export { getToolCacheSize };
 
 // State interfaces
 interface ConversationData {
@@ -121,19 +128,30 @@ agentApplication.onActivity(ActivityTypes.Invoke, async (context: TurnContext, _
 });
 
 agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, _state: AppTurnState) => {
-  const userMessage = context.activity.text?.trim() || '';
+  const rawMessage = context.activity.text?.trim() || '';
   const userName = context.activity.from?.name || 'there';
   const convId = context.activity.conversation?.id ?? '';
   const userId = context.activity.from?.id ?? '';
+  const correlationId = generateCorrelationId();
+  const turnStart = Date.now();
+
+  // Wrap the entire turn in a correlation context for distributed tracing
+  await withCorrelation({ correlationId, userId, conversationId: convId }, async () => {
+
+  // Input sanitization — guard against prompt injection
+  const { sanitized: userMessage, detectedPatterns } = sanitizeInput(rawMessage, userId);
+  if (detectedPatterns.length > 0) {
+    logger.warn('Prompt injection patterns detected', { module: 'agent', userId, correlationId, patterns: detectedPatterns.join(',') });
+  }
 
   // Always register user and persist conversation reference for proactive messaging
-  registerUser(context).catch(err => logger.error('User registration failed', { module: 'agent', userId, error: String(err) }));
+  registerUser(context).catch(err => logger.error('User registration failed', { module: 'agent', userId, correlationId, error: String(err) }));
 
   // Per-user rate limiting — protect OpenAI quota from spam
   const rateCheck = userRateLimiter.check(userId);
   if (!rateCheck.allowed) {
     const waitSec = Math.ceil(rateCheck.retryAfterMs / 1000);
-    logger.warn('Rate limited', { module: 'agent', userId, retryAfterMs: rateCheck.retryAfterMs });
+    logger.warn('Rate limited', { module: 'agent', userId, correlationId, retryAfterMs: rateCheck.retryAfterMs });
     try {
       await context.sendActivity(`⏳ You're sending messages a bit fast — please wait ~${waitSec}s before trying again.`);
     } catch { /* best effort */ }
@@ -271,7 +289,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
       logger.debug('Trimming tools', { module: 'agent', totalBefore: mergedTools.length, max: MAX_TOOLS });
       mergedTools = mergedTools.slice(0, MAX_TOOLS);
     }
-    logger.info('Turn tools merged', { module: 'agent', userId, liveMcp: liveMcpTools.length, static: staticTools.length, total: mergedTools.length });
+    logger.info('Turn tools merged', { module: 'agent', userId, correlationId, liveMcp: liveMcpTools.length, static: staticTools.length, total: mergedTools.length });
 
     // ── Graceful degradation — when OpenAI circuit is open, respond with helpful limited-mode message
     if (openAiCircuit.getState() === 'open') {
@@ -358,6 +376,14 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           const toolStart = Date.now();
           try {
             const params = JSON.parse(toolCall.function.arguments || '{}');
+
+            // Check tool result cache first (read-only tools only)
+            const cached = getCachedToolResult(toolCall.function.name, params);
+            if (cached !== undefined) {
+              trackToolCall(toolCall.function.name, Date.now() - toolStart, true);
+              return { role: 'tool' as const, tool_call_id: toolCall.id, content: cached };
+            }
+
             // Safe timeout: clearTimeout on settle prevents dangling rejection
             const result = await new Promise<string>((resolve, reject) => {
               let settled = false;
@@ -368,6 +394,10 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
                 .then(r => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } })
                 .catch(e => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } });
             });
+
+            // Cache successful results for cacheable tools
+            cacheToolResult(toolCall.function.name, params, result);
+
             trackToolCall(toolCall.function.name, Date.now() - toolStart, true);
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: result };
           } catch (parseErr) {
@@ -420,27 +450,41 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     };
 
     recordInteraction(userId, userName, interaction).catch(err =>
-      logger.error('Profiling error', { module: 'agent', userId, error: String(err) })
+      logger.error('Profiling error', { module: 'agent', userId, correlationId, error: String(err) })
     );
+
+    // Record conversation analytics metric
+    recordConversationMetric({
+      timestamp: Date.now(),
+      userId,
+      conversationId: convId,
+      durationMs: Date.now() - turnStart,
+      toolsUsed: toolsUsedInTurn.slice(0, 10),
+      tokensEstimate: reply.length + userMessage.length,
+      wasRateLimited: false,
+      wasDegraded: false,
+    });
 
     // Extract memories if conversation has enough substance (>2 turns)
     if (history.length >= 4) {
       const recentText = history.slice(-6).map(h => `${h.role}: ${h.content}`).join('\n');
       extractMemories(recentText, userId, userName).catch(err =>
-        logger.error('Memory extraction error', { module: 'agent', userId, error: String(err) })
+        logger.error('Memory extraction error', { module: 'agent', userId, correlationId, error: String(err) })
       );
     }
   } catch (err: unknown) {
     clearInterval(typingInterval);
     const errMsg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    logger.error('OpenAI/tool error', { module: 'agent', userId, error: errMsg });
+    logger.error('OpenAI/tool error', { module: 'agent', userId, correlationId, error: errMsg });
     if (err instanceof Error) trackException(err, { module: 'agent', userId });
     try {
       await context.sendActivity(`Sorry, I encountered an error while processing your request. Please try again.\n\n**Debug:** ${errMsg}`);
     } catch (sendErr: unknown) {
-      logger.error('sendActivity error in catch block', { module: 'agent', error: String(sendErr) });
+      logger.error('sendActivity error in catch block', { module: 'agent', correlationId, error: String(sendErr) });
     }
   }
+
+  }); // end withCorrelation
 });
 
 agentApplication.onActivity(ActivityTypes.InstallationUpdate, async (context: TurnContext, _state: AppTurnState) => {

@@ -13,7 +13,7 @@ import {
   Request
 } from '@microsoft/agents-hosting';
 import express, { Response } from 'express';
-import { agentApplication, credential, runAutonomousStandup, userInsightCache, memoryCache } from './agent';
+import { agentApplication, credential, runAutonomousStandup, userInsightCache, memoryCache, getToolCacheSize } from './agent';
 import { setAdapter } from './scheduler/proactiveNotifier';
 import { initAutonomousLoop, stopAutonomousLoop } from './autonomous/autonomousLoop';
 import { initProactiveEngine, stopProactiveEngine, triggerSpecific } from './proactive/proactiveEngine';
@@ -28,6 +28,9 @@ import { timingSafeEqual } from 'crypto';
 import { openAiCircuit, graphCircuit, mcpCircuit } from './retry';
 import { logger } from './logger';
 import { userRateLimiter } from './rateLimiter';
+import { getAnalytics, getAllTimeToolUsage } from './analytics';
+import { exportConversations } from './conversationExport';
+import { getActiveSubscriptions, startAutoRenewal, stopAutoRenewal } from './webhookManager';
 
 // Initialise Application Insights early (before route handlers)
 initTelemetry();
@@ -58,7 +61,7 @@ server.get('/api/health', (_req, res: Response) => {
   res.status(200).json({
     status: 'healthy',
     agent: 'Cassidy',
-    version: '1.6.0',
+    version: '1.7.0',
     uptimeHours: Number(uptimeH),
     features: {
       mcp: features.mcpAvailable,
@@ -75,9 +78,13 @@ server.get('/api/health', (_req, res: Response) => {
     caches: {
       userInsights: userInsightCache.size,
       memories: memoryCache.size,
+      toolResults: getToolCacheSize(),
     },
     rateLimiter: {
       trackedUsers: userRateLimiter.getTrackedUsers(),
+    },
+    webhooks: {
+      activeSubscriptions: getActiveSubscriptions().length,
     },
     timestamp: new Date().toISOString(),
   });
@@ -212,6 +219,51 @@ server.post('/api/calls/notifications', async (req: express.Request, res: Respon
   }
 });
 
+// Conversation analytics endpoint — secret-protected
+server.get('/api/analytics', (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const windowMs = Number(req.query?.windowMs) || 3_600_000;
+  const analytics = getAnalytics(windowMs);
+  const allTimeTools = getAllTimeToolUsage();
+  res.status(200).json({ ...analytics, allTimeToolUsage: allTimeTools, timestamp: new Date().toISOString() });
+});
+
+// Conversation export / audit trail — secret-protected
+server.get('/api/conversations/export', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  try {
+    const conversations = await exportConversations({
+      fromDate: req.query?.fromDate as string | undefined,
+      toDate: req.query?.toDate as string | undefined,
+      redact: req.query?.redact === 'true',
+      limit: Number(req.query?.limit) || 100,
+    });
+    res.status(200).json({ count: conversations.length, conversations, timestamp: new Date().toISOString() });
+  } catch (err: unknown) {
+    logger.error('Conversation export error', { module: 'export', error: String(err) });
+    res.status(500).json({ error: 'Export failed' });
+  }
+});
+
+// Webhook subscriptions management — secret-protected
+server.get('/api/webhooks', (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const subs = getActiveSubscriptions();
+  res.status(200).json({ count: subs.length, subscriptions: subs, timestamp: new Date().toISOString() });
+});
+
 // Apply JWT auth middleware for all routes below this point
 server.use(authorizeJWT(authConfig));
 
@@ -262,6 +314,10 @@ const httpServer = server.listen(port, host, () => {
     logger.info('Autonomous work loop started', { module: 'startup', conversationRefs: refs.size });
   }).catch((err: unknown) => logger.warn('Autonomous work loop ref backfill failed', { module: 'startup', error: String(err) }));
 
+  // Start webhook subscription auto-renewal loop
+  startAutoRenewal();
+  logger.info('Webhook auto-renewal started', { module: 'startup' });
+
   // Pre-warm managed identity token to avoid IMDS cold-start delay (~60s)
   if (!isDevelopment) {
     credential.getToken('https://cognitiveservices.azure.com/.default')
@@ -278,6 +334,7 @@ function gracefulShutdown(signal: string) {
   logger.info('Graceful shutdown initiated', { module: 'lifecycle', signal });
   stopAutonomousLoop();
   stopProactiveEngine();
+  stopAutoRenewal();
   httpServer.close(() => {
     logger.info('HTTP server closed', { module: 'lifecycle' });
     process.exit(0);
