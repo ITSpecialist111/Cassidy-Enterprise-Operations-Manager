@@ -78,7 +78,8 @@ describe('telemetry — no-op mode (no connection string)', () => {
 describe('telemetry — initTelemetry with configured connection string', () => {
   it('initialises successfully when applicationinsights is available', async () => {
     vi.resetModules();
-    vi.mock('./featureConfig', () => ({
+    // Use vi.doMock (not hoisted) so it doesn't override the top-level mock
+    vi.doMock('./featureConfig', () => ({
       config: { appInsightsConnectionString: 'InstrumentationKey=fake', openAiEndpoint: 'https://test.openai.azure.com' },
       features: { appInsightsConfigured: true },
     }));
