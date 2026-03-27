@@ -66,7 +66,7 @@ flowchart TB
         Persona["persona.ts\nSystem Prompt"]
     end
 
-    subgraph MCP["MCP Servers (72 live tools)"]
+    subgraph MCP["MCP Servers — 72 live tools"]
         direction LR
         Cal["📅 Calendar\n13 tools"]
         Mail["📧 Mail\n22 tools"]
@@ -88,7 +88,7 @@ flowchart TB
         Decomp["Goal\nDecomposer"]
     end
 
-    subgraph Memory["Persistence (Azure Table Storage)"]
+    subgraph Memory["Persistence — Azure Table Storage"]
         direction LR
         Conv["Conversation\nMemory"]
         LTM["Long-term\nMemory"]
@@ -115,18 +115,20 @@ flowchart TB
     end
 
     User -->|message| AgentTS
-    Channel -->|@mention| AgentTS
-    AgentTS <-->|OBO token exchange| MCP
+    Channel -->|mention| AgentTS
+    AgentTS -->|OBO token exchange| MCP
+    MCP -->|tool results| AgentTS
     AgentTS --> Intelligence
     AgentTS --> Autonomous
-    AgentTS <--> Memory
+    AgentTS --> Memory
+    Memory --> AgentTS
     AgentTS --> Orchestrator
     Loop --> Queue
     Queue --> Decomp
     Proactive -->|notifications| User
     Intelligence --> Proactive
     AgentTS --> Output
-    Notifier -->|Teams/email| User
+    Notifier -->|Teams + email| User
 
     style Agent fill:#1a1a2e,color:#fff
     style MCP fill:#16213e,color:#fff
