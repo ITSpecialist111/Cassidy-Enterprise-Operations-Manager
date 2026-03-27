@@ -10,7 +10,6 @@ a365.config.template.json
 
 # Dependencies
 node_modules/
-package-lock.json
 yarn.lock
 
 # Build outputs
