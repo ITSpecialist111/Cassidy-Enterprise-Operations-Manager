@@ -23,6 +23,23 @@ interface ActivityEntry {
   [k: string]: unknown;
 }
 
+interface AgentEvent {
+  id: string;
+  ts: string;
+  kind: string;
+  label: string;
+  durationMs?: number;
+  status?: 'ok' | 'error' | 'partial' | 'started';
+  data?: Record<string, unknown>;
+  correlationId?: string;
+}
+
+interface EventStats {
+  total: number;
+  byKind: Record<string, number>;
+  last5min: number;
+}
+
 interface Job {
   id: string;
   kind: string;
@@ -160,27 +177,130 @@ function WorkdayRuns() {
 
 function ActivityBlade() {
   const { data } = useQuery({
-    queryKey: ['activity'],
-    queryFn: () => fetchJson<{ entries: ActivityEntry[] }>('/api/dashboard/activity?limit=80'),
+    queryKey: ['blade-events'],
+    queryFn: () => fetchJson<{ events: AgentEvent[]; stats: EventStats }>('/api/dashboard/events?limit=40'),
+    refetchInterval: 3_000,
   });
+  const events = data?.events ?? [];
   return (
     <>
-      <h3>Live activity</h3>
+      <h3>Live agent feed</h3>
       <div>
-        {(data?.entries ?? []).map((e, i) => (
-          <div key={i} className="activity-row">
-            <span className="ts">{new Date(e.timestamp).toLocaleTimeString()}</span>
-            <span className={`lvl lvl-${e.level}`}>{e.level}</span>
-            <span title={e.module}>{e.message}</span>
+        {events.map((e) => (
+          <div key={e.id} className="activity-row" title={e.kind}>
+            <span className="ts">{new Date(e.ts).toLocaleTimeString()}</span>
+            <span style={{ width: 22 }}>{KIND_ICON[e.kind] ?? '•'}</span>
+            <span>{e.label}{e.durationMs != null ? ` (${e.durationMs}ms)` : ''}</span>
           </div>
         ))}
-        {!data?.entries?.length && <div className="empty">Waiting for events…</div>}
+        {events.length === 0 && <div className="empty">Waiting for activity…</div>}
       </div>
     </>
   );
 }
 
-type Page = 'live' | 'runs' | 'org';
+const KIND_ICON: Record<string, string> = {
+  'llm.turn': '🧠',
+  'llm.thought': '💭',
+  'tool.call': '🔧',
+  'tool.result': '✓',
+  'agent.message': '👤',
+  'agent.reply': '💬',
+  'corpgen.cycle': '⟳',
+  'corpgen.day': '📅',
+  'corpgen.tool': '⚙',
+  'proactive.tick': '⏰',
+  'autonomous.task': '🤖',
+  'mcp.discover': '🔌',
+  'webhook.notify': '📡',
+};
+const KIND_LABEL: Record<string, string> = {
+  'llm.turn': 'LLM Turn',
+  'llm.thought': 'Thought',
+  'tool.call': 'Tool Call',
+  'tool.result': 'Tool Result',
+  'agent.message': 'User Msg',
+  'agent.reply': 'Reply',
+  'corpgen.cycle': 'Cycle',
+  'corpgen.day': 'Day',
+  'corpgen.tool': 'CG Tool',
+  'proactive.tick': 'Proactive',
+  'autonomous.task': 'Auto Task',
+  'mcp.discover': 'MCP',
+  'webhook.notify': 'Webhook',
+};
+
+function AgentMind() {
+  const { data, error } = useQuery({
+    queryKey: ['events'],
+    queryFn: () => fetchJson<{ events: AgentEvent[]; stats: EventStats }>('/api/dashboard/events?limit=300'),
+    refetchInterval: 3_000,
+  });
+  const [filter, setFilter] = useState<string>('all');
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  if (error) return <div className="error">{(error as Error).message}</div>;
+  const events = data?.events ?? [];
+  const stats = data?.stats;
+  const filtered = filter === 'all' ? events : events.filter((e) => e.kind.startsWith(filter));
+  const kinds = Array.from(new Set(events.map((e) => e.kind))).sort();
+
+  return (
+    <>
+      <h2>Agent Mind <span style={{ color: 'var(--muted)', fontSize: 13, fontWeight: 400 }}>— what Cassidy is doing right now</span></h2>
+
+      {stats && (
+        <div className="grid-4" style={{ marginBottom: 16 }}>
+          <div className="card kpi"><div className="label">Total events</div><div className="value">{stats.total}</div></div>
+          <div className="card kpi"><div className="label">Last 5 min</div><div className="value">{stats.last5min}</div></div>
+          <div className="card kpi"><div className="label">Tool calls</div><div className="value">{(stats.byKind['tool.call'] ?? 0) + (stats.byKind['corpgen.tool'] ?? 0)}</div></div>
+          <div className="card kpi"><div className="label">LLM turns</div><div className="value">{stats.byKind['llm.turn'] ?? 0}</div></div>
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 12, marginBottom: 12 }}>
+        <button className={`pill ${filter === 'all' ? 'good' : ''}`} style={{ marginRight: 6, cursor: 'pointer' }} onClick={() => setFilter('all')}>all ({events.length})</button>
+        {kinds.map((k) => (
+          <button key={k} className={`pill ${filter === k ? 'good' : ''}`} style={{ marginRight: 6, cursor: 'pointer' }} onClick={() => setFilter(k)}>
+            {KIND_ICON[k] ?? '•'} {KIND_LABEL[k] ?? k} ({stats?.byKind[k] ?? 0})
+          </button>
+        ))}
+      </div>
+
+      <div className="card" style={{ padding: 0 }}>
+        {filtered.length === 0 && <div className="empty">No events yet — try sending Cassidy a message in Teams or trigger a CorpGen run.</div>}
+        {filtered.map((e) => {
+          const open = openId === e.id;
+          const statusColor = e.status === 'error' ? 'bad' : e.status === 'partial' ? 'warn' : e.status === 'started' ? '' : 'good';
+          return (
+            <div
+              key={e.id}
+              onClick={() => setOpenId(open ? null : e.id)}
+              style={{ padding: '10px 14px', borderBottom: '1px solid var(--border)', cursor: 'pointer', background: open ? 'var(--panel-2)' : 'transparent' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ width: 22, fontSize: 14 }}>{KIND_ICON[e.kind] ?? '•'}</span>
+                <span style={{ width: 96, fontFamily: 'var(--fontMono)', fontSize: 11, color: 'var(--muted)' }}>{new Date(e.ts).toLocaleTimeString()}</span>
+                <span style={{ width: 110, fontSize: 11, color: 'var(--muted)' }}>{KIND_LABEL[e.kind] ?? e.kind}</span>
+                <span style={{ flex: 1, fontSize: 13 }}>{e.label}</span>
+                {e.durationMs != null && <span style={{ fontFamily: 'var(--fontMono)', fontSize: 11, color: 'var(--muted)' }}>{e.durationMs}ms</span>}
+                {e.status && <span className={`pill ${statusColor}`} style={{ fontSize: 10, padding: '2px 8px' }}>{e.status}</span>}
+              </div>
+              {open && (
+                <div style={{ marginTop: 8, marginLeft: 32, padding: 10, background: 'var(--bg)', borderRadius: 4, fontFamily: 'var(--fontMono)', fontSize: 11, color: 'var(--muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {e.correlationId && <div>correlationId: {e.correlationId}</div>}
+                  {e.data && <div>{JSON.stringify(e.data, null, 2)}</div>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
+type Page = 'live' | 'mind' | 'runs' | 'org';
 
 export function App() {
   const [page, setPage] = useState<Page>('live');
@@ -201,11 +321,13 @@ export function App() {
       <div className="body">
         <nav className="nav">
           <button className={page === 'live' ? 'active' : ''} onClick={() => setPage('live')}>Live Operations</button>
+          <button className={page === 'mind' ? 'active' : ''} onClick={() => setPage('mind')}>🧠 Agent Mind</button>
           <button className={page === 'runs' ? 'active' : ''} onClick={() => setPage('runs')}>CorpGen Runs</button>
           <button className={page === 'org' ? 'active' : ''} onClick={() => setPage('org')}>Organisation</button>
         </nav>
         <main className="main">
           {page === 'live' && <LiveOps snap={snap} />}
+          {page === 'mind' && <AgentMind />}
           {page === 'runs' && <WorkdayRuns />}
           {page === 'org' && <Organisation snap={snap} />}
         </main>

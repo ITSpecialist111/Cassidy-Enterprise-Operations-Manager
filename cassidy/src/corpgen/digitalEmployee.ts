@@ -43,6 +43,7 @@ import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/reso
 import { getSharedOpenAI } from '../auth';
 import { config as appConfig } from '../featureConfig';
 import { logger } from '../logger';
+import { recordEvent } from '../agentEvents';
 import {
   defaultCassidyIdentity,
   loadIdentity,
@@ -179,6 +180,7 @@ export async function runWorkday(opts: RunOptions): Promise<DayRunResult> {
     body: JSON.stringify({ event: 'day_init', tasks: plan.tasks.length, tStart, tEnd }),
     importance: 7,
   });
+  recordEvent({ kind: 'corpgen.day', label: `Day start — ${identity.employeeId} (${plan.tasks.length} tasks)`, status: 'started', correlationId: identity.employeeId, data: { date: today, tasks: plan.tasks.length, role: identity.role } });
 
   // ── Budget bookkeeping (paper §4.1) ─────────────────────────────────────
   const budget: DayBudget = {
@@ -221,6 +223,7 @@ export async function runWorkday(opts: RunOptions): Promise<DayRunResult> {
     plan = await runCycle({ identity, plan, task, executor: opts.executor, budget });
     await saveDailyPlan(plan);
     cyclesRun++;
+    recordEvent({ kind: 'corpgen.cycle', label: `${identity.employeeId} cycle ${cyclesRun} \u2014 ${task.description.slice(0, 60)}`, correlationId: identity.employeeId, data: { task: task.taskId, app: task.app, toolCallsUsed: budget.toolCallsUsed } });
   }
 
   // ── Day End ─────────────────────────────────────────────────────────────
@@ -237,6 +240,14 @@ export async function runWorkday(opts: RunOptions): Promise<DayRunResult> {
     kind: 'reflection',
     body: reflection,
     importance: 9,
+  });
+  recordEvent({
+    kind: 'corpgen.day',
+    label: `Day end \u2014 ${identity.employeeId} (${tasksCompleted}/${totalTasks} done, ${(completionRate * 100).toFixed(0)}%)`,
+    status: tasksFailed === 0 ? 'ok' : 'partial',
+    durationMs: Date.now() - new Date(startedAt).getTime(),
+    correlationId: identity.employeeId,
+    data: { stopReason, cyclesRun, tasksCompleted, tasksFailed, tasksSkipped, toolCallsUsed: budget.toolCallsUsed, reflection: reflection.slice(0, 200) },
   });
 
   return {
@@ -449,6 +460,7 @@ async function runReactLoop(input: ReactInput): Promise<ReactOutcome> {
         text: msg.content,
         critical: classifyTurn({ kind: 'thought', text: msg.content }),
       });
+      recordEvent({ kind: 'llm.thought', label: msg.content.slice(0, 120), correlationId: identity.employeeId, data: { task: cycle.task.taskId, full: msg.content.slice(0, 600) } });
     }
     messages.push({
       role: 'assistant',
@@ -486,12 +498,15 @@ async function runReactLoop(input: ReactInput): Promise<ReactOutcome> {
 
       let toolResult: unknown;
       let toolError: string | undefined;
+      const toolStart = Date.now();
+      recordEvent({ kind: 'corpgen.tool', label: `${identity.employeeId} ▸ ${name}`, status: 'started', correlationId: identity.employeeId, data: { task: cycle.task.taskId, args: Object.keys(args).join(',') } });
       try {
         toolResult = await dispatchTool(name, args, executor);
       } catch (err) {
         toolError = err instanceof Error ? err.message : String(err);
       }
       budget.toolCallsUsed++;
+      recordEvent({ kind: 'corpgen.tool', label: `${identity.employeeId} ▸ ${name}`, status: toolError ? 'error' : 'ok', durationMs: Date.now() - toolStart, correlationId: identity.employeeId, data: toolError ? { error: toolError } : { ok: true } });
 
       const observationText = toolError
         ? `ERROR: ${toolError}`

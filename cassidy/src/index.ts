@@ -34,6 +34,7 @@ import { getActiveSubscriptions, startAutoRenewal, stopAutoRenewal } from './web
 import { requireEasyAuth } from './easyAuth';
 import { getRecentActivity } from './logger';
 import { listAgents } from './orchestrator/agentRegistry';
+import { getRecentEvents, getEventStats, type AgentEventKind } from './agentEvents';
 import path from 'path';
 
 // Initialise Application Insights early (before route handlers)
@@ -512,6 +513,17 @@ dashApi.get('/activity', (req, res: Response) => {
   const level = (req.query.level as 'debug' | 'info' | 'warn' | 'error' | undefined) || undefined;
   const moduleFilter = (req.query.module as string | undefined) || undefined;
   res.status(200).json({ entries: getRecentActivity({ limit, level, module: moduleFilter }) });
+});
+
+dashApi.get('/events', (req, res: Response) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  const sinceId = (req.query.sinceId as string | undefined) || undefined;
+  const kindsParam = (req.query.kinds as string | undefined) || undefined;
+  const kinds = kindsParam ? (kindsParam.split(',') as AgentEventKind[]) : undefined;
+  res.status(200).json({
+    events: getRecentEvents({ limit, sinceId, kinds }),
+    stats: getEventStats(),
+  });
 });
 
 dashApi.get('/jobs', async (_req, res: Response) => {

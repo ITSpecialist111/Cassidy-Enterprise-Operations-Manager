@@ -31,6 +31,7 @@ import { trackOpenAiCall, trackToolCall, trackException } from './telemetry';
 import { withRetry, openAiCircuit, isTransientError } from './retry';
 import { tryBuildCardFromReply } from './adaptiveCards';
 import { logger } from './logger';
+import { recordEvent } from './agentEvents';
 import { userRateLimiter } from './rateLimiter';
 import { LruCache } from './lruCache';
 import { sanitizeInput } from './inputSanitizer';
@@ -143,6 +144,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
   if (detectedPatterns.length > 0) {
     logger.warn('Prompt injection patterns detected', { module: 'agent', userId, correlationId, patterns: detectedPatterns.join(',') });
   }
+  recordEvent({ kind: 'agent.message', label: `${userName}: ${userMessage.slice(0, 80)}`, correlationId, data: { userId, length: userMessage.length, sanitised: detectedPatterns.length > 0 } });
 
   // Always register user and persist conversation reference for proactive messaging
   registerUser(context).catch(err => logger.error('User registration failed', { module: 'agent', userId, correlationId, error: String(err) }));
@@ -340,6 +342,22 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
           }),
         );
         trackOpenAiCall(Date.now() - llmStart, true, appConfig.openAiDeployment);
+        const usage = (response as { usage?: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number } }).usage;
+        recordEvent({
+          kind: 'llm.turn',
+          label: `gpt-5 turn (iter ${i + 1})`,
+          status: 'ok',
+          durationMs: Date.now() - llmStart,
+          correlationId,
+          data: {
+            iteration: i + 1,
+            finishReason: response.choices[0]?.finish_reason,
+            toolCalls: response.choices[0]?.message?.tool_calls?.length ?? 0,
+            promptTokens: usage?.prompt_tokens,
+            completionTokens: usage?.completion_tokens,
+            totalTokens: usage?.total_tokens,
+          },
+        });
       } catch (apiErr) {
         trackOpenAiCall(Date.now() - llmStart!, false, appConfig.openAiDeployment);
         if (apiErr instanceof Error && (apiErr.name === 'AbortError' || apiErr.message.includes('abort'))) {
@@ -390,6 +408,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
               const timer = setTimeout(() => {
                 if (!settled) { settled = true; reject(new Error(`Tool timeout after ${TOOL_EXEC_TIMEOUT_MS / 1000}s`)); }
               }, TOOL_EXEC_TIMEOUT_MS);
+              recordEvent({ kind: 'tool.call', label: toolCall.function.name, status: 'started', correlationId, data: { args: Object.keys(params).join(','), liveMcp: liveNames.has(toolCall.function.name) } });
               executeTool(toolCall.function.name, params, context)
                 .then(r => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } })
                 .catch(e => { if (!settled) { settled = true; clearTimeout(timer); reject(e); } });
@@ -399,11 +418,13 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
             cacheToolResult(toolCall.function.name, params, result);
 
             trackToolCall(toolCall.function.name, Date.now() - toolStart, true);
+            recordEvent({ kind: 'tool.result', label: toolCall.function.name, status: 'ok', durationMs: Date.now() - toolStart, correlationId, data: { resultBytes: result.length } });
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: result };
           } catch (parseErr) {
             trackToolCall(toolCall.function.name, Date.now() - toolStart, false);
             const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
             logger.error('Tool execution failed', { module: 'agent', toolName: toolCall.function.name, userId, durationMs: Date.now() - toolStart, error: errMsg });
+            recordEvent({ kind: 'tool.result', label: toolCall.function.name, status: 'error', durationMs: Date.now() - toolStart, correlationId, data: { error: errMsg } });
             return { role: 'tool' as const, tool_call_id: toolCall.id, content: JSON.stringify({ error: errMsg }) };
           }
         })
@@ -414,6 +435,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
     history.push({ role: 'assistant', content: reply });
     await saveHistory(convId, history);
     clearInterval(typingInterval);
+    recordEvent({ kind: 'agent.reply', label: reply.slice(0, 100), durationMs: Date.now() - turnStart, status: 'ok', correlationId, data: { length: reply.length } });
     try {
       // Try sending as an Adaptive Card for structured content; fall back to plain text
       const card = tryBuildCardFromReply(reply);
