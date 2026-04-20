@@ -17,6 +17,7 @@ import { agentApplication, credential, runAutonomousStandup, userInsightCache, m
 import { setAdapter } from './scheduler/proactiveNotifier';
 import { initAutonomousLoop, stopAutonomousLoop } from './autonomous/autonomousLoop';
 import { initProactiveEngine, stopProactiveEngine, triggerSpecific } from './proactive/proactiveEngine';
+import { startCorpGenScheduler, stopCorpGenScheduler } from './corpgenScheduler';
 import { getAllConversationRefs } from './proactive/userRegistry';
 import { handleTranscriptWebhook, postToMeetingChat } from './meetings/meetingMonitor';
 import { handleCallNotification, getActiveCall } from './voice/callManager';
@@ -269,26 +270,60 @@ server.get('/api/webhooks', (req: express.Request, res: Response) => {
   res.status(200).json({ count: subs.length, subscriptions: subs, timestamp: new Date().toISOString() });
 });
 
-// CorpGen autonomous workday — operator-only HTTP harness (secret-protected)
+// CorpGen autonomous workday — operator-only HTTP harness (secret-protected).
+// Pass `async=true` to enqueue and poll via /api/corpgen/jobs/:id (recommended
+// for runs >2 minutes — App Service Linux caps responses at ~230s).
 server.post('/api/corpgen/run', async (req: express.Request, res: Response) => {
   const secret = req.headers['x-scheduled-secret'] || req.body?.secret;
   if (!verifySecret(secret)) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
+  const opts = {
+    employeeId: typeof req.body?.employeeId === 'string' ? req.body.employeeId : undefined,
+    maxCycles: typeof req.body?.maxCycles === 'number' ? req.body.maxCycles : undefined,
+    maxWallclockMs: typeof req.body?.maxWallclockMs === 'number' ? req.body.maxWallclockMs : undefined,
+    maxToolCalls: typeof req.body?.maxToolCalls === 'number' ? req.body.maxToolCalls : undefined,
+    phase: typeof req.body?.phase === 'string'
+      ? req.body.phase as 'init' | 'cycle' | 'reflect' | 'monthly' | 'manual'
+      : undefined,
+    force: typeof req.body?.force === 'boolean' ? req.body.force : undefined,
+  };
+  if (req.body?.async === true) {
+    const { startJob } = await import('./corpgenJobs');
+    const job = startJob('workday', opts as Record<string, unknown>, async () => {
+      const { runWorkdayForCassidy } = await import('./corpgenIntegration');
+      return await runWorkdayForCassidy(opts) as unknown as Record<string, unknown>;
+    });
+    res.status(202).json({ ok: true, jobId: job.id, status: job.status, statusUrl: `/api/corpgen/jobs/${job.id}` });
+    return;
+  }
   try {
     const { runWorkdayForCassidy } = await import('./corpgenIntegration');
-    const result = await runWorkdayForCassidy({
-      employeeId: typeof req.body?.employeeId === 'string' ? req.body.employeeId : undefined,
-      maxCycles: typeof req.body?.maxCycles === 'number' ? req.body.maxCycles : 5,
-      maxWallclockMs: typeof req.body?.maxWallclockMs === 'number' ? req.body.maxWallclockMs : 5 * 60_000,
-      maxToolCalls: typeof req.body?.maxToolCalls === 'number' ? req.body.maxToolCalls : 100,
-    });
+    const result = await runWorkdayForCassidy(opts);
     res.status(200).json({ ok: true, result, timestamp: new Date().toISOString() });
   } catch (err: unknown) {
     logger.error('CorpGen run failed', { module: 'corpgen', error: String(err) });
     res.status(500).json({ ok: false, error: String(err), timestamp: new Date().toISOString() });
   }
+});
+
+// CorpGen jobs status (operator-only, secret-protected). Mirrors the
+// dashboard /api/dashboard/jobs endpoint but auth-by-secret instead of EasyAuth.
+server.get('/api/corpgen/jobs', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
+  if (!verifySecret(secret)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  const { listJobs, summariseJob } = await import('./corpgenJobs');
+  res.status(200).json({ jobs: listJobs().map(summariseJob) });
+});
+
+server.get('/api/corpgen/jobs/:id', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
+  if (!verifySecret(secret)) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  const { getJob, summariseJob } = await import('./corpgenJobs');
+  const job = getJob(req.params.id);
+  if (!job) { res.status(404).json({ error: 'not found' }); return; }
+  res.status(200).json(summariseJob(job));
 });
 
 // CorpGen multi-day benchmark (operator-only). Synchronous by default; pass
@@ -423,31 +458,7 @@ server.post('/api/corpgen/organization', async (req: express.Request, res: Respo
   }
 });
 
-// CorpGen async job status (operator-only)
-server.get('/api/corpgen/jobs/:id', async (req: express.Request, res: Response) => {
-  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
-  if (!verifySecret(secret)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  const { getJob, summariseJob } = await import('./corpgenJobs');
-  const job = getJob(req.params.id);
-  if (!job) {
-    res.status(404).json({ error: 'job not found' });
-    return;
-  }
-  res.status(200).json(summariseJob(job));
-});
-
-server.get('/api/corpgen/jobs', async (req: express.Request, res: Response) => {
-  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
-  if (!verifySecret(secret)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-  const { listJobs, summariseJob } = await import('./corpgenJobs');
-  res.status(200).json({ jobs: listJobs().map(summariseJob) });
-});
+// CorpGen async job status (operator-only) — (duplicate routes removed; canonical defs above)
 
 // ---------------------------------------------------------------------------
 // Mission Control dashboard — Easy Auth (Entra) protected JSON API
@@ -608,6 +619,9 @@ const httpServer = server.listen(port, host, () => {
     hydrateJobs().then(n => logger.info('CorpGen jobs hydrated', { module: 'startup', count: n })),
   ).catch((err: unknown) => logger.warn('CorpGen jobs hydrate failed', { module: 'startup', error: String(err) }));
 
+  // Start the in-process CorpGen day scheduler (init / cycle / reflect / monthly).
+  startCorpGenScheduler();
+
   // Pre-warm managed identity token to avoid IMDS cold-start delay (~60s)
   if (!isDevelopment) {
     credential.getToken('https://cognitiveservices.azure.com/.default')
@@ -624,6 +638,7 @@ function gracefulShutdown(signal: string) {
   logger.info('Graceful shutdown initiated', { module: 'lifecycle', signal });
   stopAutonomousLoop();
   stopProactiveEngine();
+  stopCorpGenScheduler();
   stopAutoRenewal();
   httpServer.close(() => {
     logger.info('HTTP server closed', { module: 'lifecycle' });

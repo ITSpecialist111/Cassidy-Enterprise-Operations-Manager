@@ -257,7 +257,10 @@ export type DayStopReason =
   | 'schedule_end'
   | 'cycle_cap'
   | 'wallclock_cap'
-  | 'tool_call_cap';
+  | 'tool_call_cap'
+  | 'skipped:weekend'
+  | 'skipped:before_hours'
+  | 'skipped:after_hours';
 
 // ---------------------------------------------------------------------------
 // Artifact-based judging (CorpGen §5.3)

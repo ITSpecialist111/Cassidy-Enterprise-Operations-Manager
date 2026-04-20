@@ -68,6 +68,8 @@ export async function buildCassidyExecutor(context?: TurnContext): Promise<ToolE
 // runWorkdayForCassidy — single entry point used by both LLM tool + HTTP
 // ---------------------------------------------------------------------------
 
+export type WorkdayPhase = 'init' | 'cycle' | 'reflect' | 'monthly' | 'manual';
+
 export interface RunWorkdayInput {
   /** Optional override of the digital employee identity (defaults to Cassidy). */
   employeeId?: string;
@@ -83,9 +85,20 @@ export interface RunWorkdayInput {
   withFallback?: boolean;
   /** Optional Teams turn context for OBO + live MCP tools. */
   context?: TurnContext;
+  /**
+   * CorpGen day phase tag — informs telemetry + cap presets.
+   * - 'init': Day-Init briefing (~08:50 cron)
+   * - 'cycle': through-day execution cycle (~every 20 min cron)
+   * - 'reflect': Day-End reflection (~17:30 cron)
+   * - 'monthly': monthly objective regen (~1st of month cron)
+   * - 'manual': operator/Teams-triggered run (no schedule gating).
+   */
+  phase?: WorkdayPhase;
+  /** Bypass work-hours/weekend gating. Default true for `manual`, false otherwise. */
+  force?: boolean;
 }
 
-const DEFAULT_INTERACTIVE: Required<Omit<RunWorkdayInput, 'employeeId' | 'context'>> = {
+const DEFAULT_INTERACTIVE: Required<Omit<RunWorkdayInput, 'employeeId' | 'context' | 'phase' | 'force'>> = {
   maxCycles: 10,
   maxWallclockMs: 5 * 60_000,
   maxToolCalls: 200,
@@ -93,14 +106,72 @@ const DEFAULT_INTERACTIVE: Required<Omit<RunWorkdayInput, 'employeeId' | 'contex
   withFallback: true,
 };
 
+/** Phase-specific cap presets. Caller can still override. */
+function phasePresets(phase: WorkdayPhase): { maxCycles: number; maxWallclockMs: number; maxToolCalls: number } {
+  switch (phase) {
+    case 'init':    return { maxCycles: 1, maxWallclockMs: 90_000,  maxToolCalls: 30 };
+    case 'cycle':   return { maxCycles: 1, maxWallclockMs: 120_000, maxToolCalls: 40 };
+    case 'reflect': return { maxCycles: 1, maxWallclockMs: 90_000,  maxToolCalls: 30 };
+    case 'monthly': return { maxCycles: 1, maxWallclockMs: 60_000,  maxToolCalls: 20 };
+    default:        return { maxCycles: 10, maxWallclockMs: 5 * 60_000, maxToolCalls: 200 };
+  }
+}
+
+/** Returns null if currently inside work hours, else a 'skipped' result body. */
+export function checkWorkHours(
+  identity: DigitalEmployeeIdentity,
+  now: Date = new Date(),
+): { inHours: boolean; reason?: string } {
+  const day = now.getUTCDay(); // 0=Sun, 6=Sat — close enough for gating
+  if (day === 0 || day === 6) return { inHours: false, reason: 'weekend' };
+  // Use UTC hour as a coarse approximation; identity.schedule is local but BST/GMT are within 1h.
+  // For Europe/London: 09:00 local ≈ 08:00 UTC summer, 09:00 UTC winter — accept 07–18 UTC.
+  const h = now.getUTCHours();
+  if (h < Math.max(0, identity.schedule.startHour - 2)) return { inHours: false, reason: 'before_hours' };
+  if (h >= identity.schedule.endHour + 1)               return { inHours: false, reason: 'after_hours' };
+  return { inHours: true };
+}
+
 /**
  * Run one CorpGen workday using Cassidy's tool surface. Safe to invoke from
  * a Teams turn (interactive caps) or from the HTTP harness (operator caps).
+ *
+ * If `phase` is set and `force` is false (default for non-manual phases),
+ * gates the run on work hours / weekday using the identity schedule. Returns
+ * a synthetic skipped result rather than throwing so cron callers stay quiet.
  */
 export async function runWorkdayForCassidy(input: RunWorkdayInput = {}): Promise<DayRunResult> {
-  const opts = { ...DEFAULT_INTERACTIVE, ...input };
+  const phase: WorkdayPhase = input.phase ?? 'manual';
+  const force = input.force ?? (phase === 'manual');
+  const presets = phasePresets(phase);
+  const opts = { ...DEFAULT_INTERACTIVE, ...presets, ...input };
   const identity = defaultCassidyIdentity();
   if (input.employeeId) identity.employeeId = input.employeeId;
+
+  // Work-hours gating for cron-driven phases.
+  if (!force) {
+    const gate = checkWorkHours(identity);
+    if (!gate.inHours) {
+      logger.info('CorpGen workday gated by schedule', {
+        module: 'corpgen.bridge', phase, reason: gate.reason,
+      });
+      const today = new Date().toISOString().slice(0, 10);
+      return {
+        employeeId: identity.employeeId,
+        date: today,
+        cyclesRun: 0,
+        tasksCompleted: 0,
+        tasksSkipped: 0,
+        tasksFailed: 0,
+        toolCallsUsed: 0,
+        completionRate: 0,
+        stopReason: `skipped:${gate.reason}` as DayRunResult['stopReason'],
+        reflection: `Skipped ${phase} run: ${gate.reason}.`,
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+      };
+    }
+  }
 
   let executor = await buildCassidyExecutor(input.context);
   if (opts.withFallback) executor = withCommFallback(executor, { employeeId: identity.employeeId });
@@ -117,6 +188,7 @@ export async function runWorkdayForCassidy(input: RunWorkdayInput = {}): Promise
   logger.info('CorpGen workday starting', {
     module: 'corpgen.bridge',
     employeeId: identity.employeeId,
+    phase,
     maxCycles: opts.maxCycles,
     maxToolCalls: opts.maxToolCalls,
   });
