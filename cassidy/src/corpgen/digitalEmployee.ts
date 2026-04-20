@@ -420,10 +420,18 @@ async function runReactLoop(input: ReactInput): Promise<ReactOutcome> {
   const { cycle, identity, executor, budget, demos } = input;
   const openai = getSharedOpenAI();
 
+  // Azure OpenAI caps a single request at 128 tools. Cognitive + sub-agent
+  // tools are load-bearing for the React loop, so they go first; host tools
+  // (live MCP + static) fill the remainder. Without this slice the request
+  // is rejected with a 400 (or worse, the model returns text-only with no
+  // tool_calls — which is exactly what produced 5 minutes of "thinking" and
+  // zero work in c733afc7).
+  const MAX_TOOLS = 128;
+  const head = [...COGNITIVE_TOOL_DEFS, ...SUBAGENT_TOOL_DEFS];
+  const remaining = Math.max(0, MAX_TOOLS - head.length);
   const tools: ChatCompletionTool[] = [
-    ...COGNITIVE_TOOL_DEFS,
-    ...SUBAGENT_TOOL_DEFS,
-    ...executor.hostTools(),
+    ...head,
+    ...executor.hostTools().slice(0, remaining),
   ];
 
   const messages: ChatCompletionMessageParam[] = [

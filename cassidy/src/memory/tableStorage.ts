@@ -32,9 +32,13 @@ async function ensureTable(tableName: string): Promise<void> {
         if (msg.includes('TableAlreadyExists')) {
           // Table exists — that's fine, mark as ensured
         } else if (msg.includes('AuthorizationFailure')) {
-          // Can't create tables — assume they exist (created via portal/IaC)
-          console.warn(`[TableStorage] Cannot create table "${tableName}" (AuthorizationFailure) — assuming it exists`);
+          // Can't create tables — assume they exist (created out-of-band).
+          // Do NOT cache success here: if the table was actually missing the
+          // first upsert will throw TableNotFound and the next call should
+          // retry. We mark ensured only to avoid hammering the create call.
+          console.warn(`[TableStorage] Cannot create table "${tableName}" (AuthorizationFailure) — assuming it exists out-of-band`);
         } else {
+          // Transient error — drop the cached promise so a later call retries.
           _tablePromises.delete(tableName);
           throw err;
         }
@@ -46,6 +50,15 @@ async function ensureTable(tableName: string): Promise<void> {
   }
 
   return _tablePromises.get(tableName);
+}
+
+/**
+ * Drop the cached "ensured" flag for a table so the next operation retries
+ * the create. Called when an upsert/list fails with TableNotFound — usually
+ * because the create silently failed earlier (AuthorizationFailure path).
+ */
+function invalidateEnsured(tableName: string): void {
+  _ensuredTables.delete(tableName);
 }
 
 export interface TableEntity {
@@ -67,6 +80,7 @@ export async function upsertEntity(tableName: string, entity: TableEntity): Prom
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('TableNotFound')) {
       console.warn(`[TableStorage] upsertEntity(${tableName}) skipped — table does not exist and could not be created`);
+      invalidateEnsured(tableName);
       return;
     }
     throw err;
@@ -117,6 +131,7 @@ export async function listEntities<T extends TableEntity>(
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('TableNotFound')) {
       console.warn(`[TableStorage] listEntities(${tableName}) returning empty — table does not exist`);
+      invalidateEnsured(tableName);
       return [];
     }
     throw err;
