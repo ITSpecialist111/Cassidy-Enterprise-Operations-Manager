@@ -206,6 +206,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
       try { await context.sendActivity(new Activity(ActivityTypes.Typing)); } catch (err) { logger.debug('Typing indicator failed', { module: 'agent', error: String(err) }); }
     }, 4000);
     try {
+      recordEvent({ kind: 'autonomous.task', label: `Planning goal \u2014 ${userMessage.slice(0, 80)}`, status: 'started', correlationId, data: { userId, goal: userMessage.slice(0, 200) } });
       await context.sendActivity(`🤔 That sounds like a multi-step goal. I'm planning it out now...`);
       const subtasks = await decomposeGoal(userMessage);
       const workItem = createWorkItem({
@@ -216,6 +217,7 @@ agentApplication.onActivity(ActivityTypes.Message, async (context: TurnContext, 
         userId,
       });
       await enqueueWork(workItem);
+      recordEvent({ kind: 'autonomous.task', label: `Enqueued \u2014 ${subtasks.length} subtask(s)`, status: 'ok', correlationId, data: { workItem: workItem.rowKey, subtasks: subtasks.map(s => s.description) } });
       const plan = subtasks.map((s, i) => `${i + 1}. ${s.description}`).join('\n');
       const reply = `✅ **Got it — I'm on it autonomously.**\n\n**Goal:** ${userMessage}\n\n**My plan:**\n${plan}\n\nI'll work through this and update you as each step completes. You don't need to stay in the chat.`;
       history.push({ role: 'assistant', content: reply });

@@ -13,6 +13,7 @@ import {
 import { getAllTools, executeTool } from '../tools/index';
 import { getSharedOpenAI } from '../auth';
 import { config as appConfig } from '../featureConfig';
+import { recordEvent } from '../agentEvents';
 
 const POLL_INTERVAL_MS = appConfig.autonomousPollIntervalMs;
 const MAX_RETRIES = 3;
@@ -50,6 +51,7 @@ async function runLoop(): Promise<void> {
 
   if (items.length === 0) return;
   console.debug(`[AutonomousLoop] Processing ${items.length} work item(s)`);
+  recordEvent({ kind: 'autonomous.task', label: `Polling work queue — ${items.length} item(s)`, status: 'started', data: { items: items.length } });
 
   for (const item of items) {
     await processItem(item).catch(err =>
@@ -79,21 +81,27 @@ async function processItem(item: WorkItem): Promise<void> {
     if (allDone) {
       const summary = subtasks.map(s => `✅ ${s.description}`).join('\n');
       await updateWorkItem({ rowKey: item.rowKey, status: 'done', result: summary });
+      recordEvent({ kind: 'autonomous.task', label: `Goal complete — ${item.goal.slice(0, 80)}`, status: 'ok', correlationId: item.rowKey, data: { goal: item.goal, subtasks: subtasks.length } });
       await notifyUser(item, `✅ **Goal complete:** ${item.goal}\n\n${summary}`);
     } else if (hasFailed && item.retryCount >= MAX_RETRIES) {
       await updateWorkItem({ rowKey: item.rowKey, status: 'waiting_on_human' });
       const failed = subtasks.filter(s => s.status === 'failed').map(s => `❌ ${s.description}`).join('\n');
+      recordEvent({ kind: 'autonomous.task', label: `Goal blocked — needs human: ${item.goal.slice(0, 80)}`, status: 'error', correlationId: item.rowKey, data: { goal: item.goal, failed: subtasks.filter(s => s.status === 'failed').map(s => s.description) } });
       await notifyUser(item, `⚠️ **I need your help with:** ${item.goal}\n\nI tried ${MAX_RETRIES} times but hit a blocker:\n${failed}\n\nPlease advise and I'll continue.`);
     }
     return;
   }
 
-  console.debug(`[AutonomousLoop] Executing subtask ${subtasks.indexOf(next) + 1}/${subtasks.length} for work item ${item.rowKey}`);  await updateWorkItem({ rowKey: item.rowKey, status: 'in_progress' });
+  const stepIndex = subtasks.indexOf(next) + 1;
+  console.debug(`[AutonomousLoop] Executing subtask ${stepIndex}/${subtasks.length} for work item ${item.rowKey}`);  await updateWorkItem({ rowKey: item.rowKey, status: 'in_progress' });
+  recordEvent({ kind: 'autonomous.task', label: `Subtask ${stepIndex}/${subtasks.length} — ${next.description.slice(0, 80)}`, status: 'started', correlationId: item.rowKey, data: { workItem: item.rowKey, subtaskId: next.id, toolHint: next.toolHint, goal: item.goal.slice(0, 100) } });
+  const subtaskStart = Date.now();
 
   try {
     const result = await executeSubtask(next, subtasks, item.goal);
     next.status = 'done';
     next.result = result;
+    recordEvent({ kind: 'autonomous.task', label: `✓ Subtask ${stepIndex}/${subtasks.length} — ${next.description.slice(0, 60)}`, status: 'ok', durationMs: Date.now() - subtaskStart, correlationId: item.rowKey, data: { workItem: item.rowKey, subtaskId: next.id, result: result.slice(0, 300) } });
     await updateWorkItem({
       rowKey: item.rowKey,
       subtasks: JSON.stringify(subtasks),
@@ -104,6 +112,7 @@ async function processItem(item: WorkItem): Promise<void> {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     console.error(`[AutonomousLoop] Subtask failed: ${error}`);
+    recordEvent({ kind: 'autonomous.task', label: `✗ Subtask ${stepIndex}/${subtasks.length} failed`, status: 'error', durationMs: Date.now() - subtaskStart, correlationId: item.rowKey, data: { workItem: item.rowKey, subtaskId: next.id, error } });
     next.status = 'failed';
     const newRetryCount = item.retryCount + 1;
 
