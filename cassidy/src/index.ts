@@ -603,6 +603,11 @@ const httpServer = server.listen(port, host, () => {
   startAutoRenewal();
   logger.info('Webhook auto-renewal started', { module: 'startup' });
 
+  // Hydrate CorpGen jobs from table storage so the dashboard survives restarts.
+  void import('./corpgenJobs').then(({ hydrateJobs }) =>
+    hydrateJobs().then(n => logger.info('CorpGen jobs hydrated', { module: 'startup', count: n })),
+  ).catch((err: unknown) => logger.warn('CorpGen jobs hydrate failed', { module: 'startup', error: String(err) }));
+
   // Pre-warm managed identity token to avoid IMDS cold-start delay (~60s)
   if (!isDevelopment) {
     credential.getToken('https://cognitiveservices.azure.com/.default')

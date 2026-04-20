@@ -139,7 +139,7 @@ const CORPGEN_TOOL_DEFINITIONS: ChatCompletionTool[] = [
     function: {
       name: 'cg_run_workday',
       description:
-        'Run an autonomous CorpGen "digital employee" workday. Generates a hierarchical plan, executes tasks via Cassidy\'s tool surface (MCP, host tools), updates plan state, and produces an end-of-day reflection. Use when the user asks to "run a workday", "do an autonomous run", "execute the day plan", or "demo CorpGen". Interactive caps apply: max 10 cycles, 5 minutes wallclock, 200 tool calls.',
+        'Start an autonomous CorpGen "digital employee" workday in the background. Returns immediately with a job id; progress and final results stream to the dashboard CorpGen Runs page (and survive restarts). Use when the user asks to "run a workday", "do an autonomous run", "execute the day plan", or "demo CorpGen". Interactive caps apply: max 10 cycles, 5 minutes wallclock, 200 tool calls.',
       parameters: {
         type: 'object',
         properties: {
@@ -225,10 +225,15 @@ const PROACTIVE_TOOL_DEFINITIONS: ChatCompletionTool[] = [
 // ---------------------------------------------------------------------------
 
 export function getAllTools(): ChatCompletionTool[] {
+  // NB: order matters. The agent merges these with live MCP tools and slices
+  // to the model's 128-tool cap (live MCP comes first). Anything appended at
+  // the tail risks being trimmed when MCP discovery returns a full payload.
+  // Keep host-critical tools (CorpGen workday runner, MCP control) early.
   return [
+    ...CORPGEN_TOOL_DEFINITIONS,
+    ...MCP_TOOL_DEFINITIONS,
     ...OPERATIONS_TOOL_DEFINITIONS,
     ...FORMAT_TOOL_DEFINITIONS,
-    ...MCP_TOOL_DEFINITIONS,
     ...UTILITY_TOOL_DEFINITIONS,
     ...PROACTIVE_TOOL_DEFINITIONS,
     ...REPORT_TOOL_DEFINITIONS,
@@ -236,7 +241,6 @@ export function getAllTools(): ChatCompletionTool[] {
     ...VOICE_TOOL_DEFINITIONS,
     ...INTELLIGENCE_TOOL_DEFINITIONS,
     ...ORCHESTRATOR_TOOL_DEFINITIONS,
-    ...CORPGEN_TOOL_DEFINITIONS,
   ];
 }
 
@@ -599,16 +603,27 @@ export async function executeTool(
       // ── CorpGen autonomous workday ─────────────────────────────────────
       case 'cg_run_workday': {
         const { runWorkdayForCassidy, summariseDayForTeams } = await import('../corpgenIntegration');
-        const day = await runWorkdayForCassidy({
-          context,
+        const { startJob } = await import('../corpgenJobs');
+        const request = {
           maxCycles: typeof params.maxCycles === 'number' ? params.maxCycles : undefined,
           maxWallclockMs: typeof params.maxWallclockMs === 'number' ? params.maxWallclockMs : undefined,
           maxToolCalls: typeof params.maxToolCalls === 'number' ? params.maxToolCalls : undefined,
           employeeId: typeof params.employeeId === 'string' ? params.employeeId : undefined,
+        };
+        // Run the workday in the background. The bot turn must return well
+        // under the 30s tool-execution cap, so we kick off `startJob` and
+        // surface the job id immediately. Status & results land in the
+        // CorpGen Runs dashboard and persist across restarts.
+        const job = startJob('workday', request as Record<string, unknown>, async () => {
+          const day = await runWorkdayForCassidy({ context, ...request });
+          return { ...day, summary: summariseDayForTeams(day) } as unknown as Record<string, unknown>;
         });
         result = {
-          summary: summariseDayForTeams(day),
-          day,
+          jobId: job.id,
+          status: job.status,
+          message:
+            `Started CorpGen workday in the background (job ${job.id.slice(0, 8)}). ` +
+            'Track progress on the dashboard CorpGen Runs page.',
         };
         break;
       }

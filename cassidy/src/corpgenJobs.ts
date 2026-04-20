@@ -13,9 +13,13 @@ import { randomUUID } from 'node:crypto';
 import { logger } from './logger';
 import type { DayRunResult } from './corpgen';
 import type { OrganizationResult } from './corpgen';
+import { upsertEntity, listEntities, type TableEntity } from './memory/tableStorage';
 
-export type JobKind = 'multi-day' | 'organization';
+export type JobKind = 'workday' | 'multi-day' | 'organization';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+
+const JOBS_TABLE = 'CassidyCorpGenJobs';
+const JOBS_PARTITION = 'jobs';
 
 export interface JobRecord<TResult = unknown> {
   id: string;
@@ -63,6 +67,103 @@ export function listJobs(): JobRecord[] {
 
 export function _resetJobsForTest(): void {
   _jobs.clear();
+  _hydrated = false;
+}
+
+// ---------------------------------------------------------------------------
+// Persistence — survives webapp restarts so the dashboard CorpGen Runs table
+// is not wiped on every deploy.
+// ---------------------------------------------------------------------------
+
+interface JobEntity extends TableEntity {
+  partitionKey: string;
+  rowKey: string;
+  kind: string;
+  status: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  requestJson: string;
+  resultJson?: string;
+  error?: string;
+  progressJson?: string;
+}
+
+function toEntity(job: JobRecord): JobEntity {
+  return {
+    partitionKey: JOBS_PARTITION,
+    rowKey: job.id,
+    kind: job.kind,
+    status: job.status,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    durationMs: job.durationMs,
+    requestJson: JSON.stringify(job.request ?? {}),
+    resultJson: job.result !== undefined ? JSON.stringify(job.result) : undefined,
+    error: job.error,
+    progressJson: job.progress ? JSON.stringify(job.progress) : undefined,
+  };
+}
+
+function fromEntity(e: JobEntity): JobRecord {
+  let request: Record<string, unknown> = {};
+  try { request = JSON.parse(e.requestJson || '{}'); } catch { /* ignore */ }
+  let result: unknown;
+  if (e.resultJson) { try { result = JSON.parse(e.resultJson); } catch { /* ignore */ } }
+  let progress: JobRecord['progress'];
+  if (e.progressJson) { try { progress = JSON.parse(e.progressJson); } catch { /* ignore */ } }
+  return {
+    id: e.rowKey,
+    kind: e.kind as JobKind,
+    status: e.status as JobStatus,
+    createdAt: e.createdAt,
+    startedAt: e.startedAt,
+    finishedAt: e.finishedAt,
+    durationMs: e.durationMs,
+    request,
+    result,
+    error: e.error,
+    progress,
+  };
+}
+
+function persist(job: JobRecord): void {
+  void upsertEntity(JOBS_TABLE, toEntity(job)).catch((err) => {
+    logger.warn('CorpGen job persist failed', {
+      module: 'corpgen.jobs',
+      id: job.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
+
+let _hydrated = false;
+export async function hydrateJobs(): Promise<number> {
+  if (_hydrated) return _jobs.size;
+  _hydrated = true;
+  try {
+    const rows = await listEntities<JobEntity>(JOBS_TABLE, JOBS_PARTITION);
+    for (const row of rows) {
+      const job = fromEntity(row);
+      // Re-runs are not resumed; mark stragglers as failed so they don't appear stuck.
+      if (job.status === 'queued' || job.status === 'running') {
+        job.status = 'failed';
+        job.error = job.error ?? 'Process restarted before job completed';
+        job.finishedAt = job.finishedAt ?? new Date().toISOString();
+      }
+      _jobs.set(job.id, job);
+    }
+    logger.info('CorpGen jobs hydrated', { module: 'corpgen.jobs', count: rows.length });
+    return rows.length;
+  } catch (err) {
+    logger.warn('CorpGen jobs hydrate failed', {
+      module: 'corpgen.jobs',
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
 }
 
 /**
@@ -84,15 +185,18 @@ export function startJob<TResult>(
     request,
   };
   _jobs.set(id, record as JobRecord);
+  persist(record as JobRecord);
 
   // Fire-and-forget background execution. Errors are captured into the record.
   void (async () => {
     record.status = 'running';
     record.startedAt = new Date().toISOString();
+    persist(record as JobRecord);
     const t0 = Date.now();
     try {
       const result = await worker((p) => {
         record.progress = p;
+        persist(record as JobRecord);
       });
       record.result = result;
       record.status = 'succeeded';
@@ -103,6 +207,7 @@ export function startJob<TResult>(
     } finally {
       record.finishedAt = new Date().toISOString();
       record.durationMs = Date.now() - t0;
+      persist(record as JobRecord);
       logger.info('CorpGen job finished', {
         module: 'corpgen.jobs',
         id,
@@ -134,6 +239,19 @@ export function summariseJob(job: JobRecord): Record<string, unknown> {
 
   // Light-touch shape sniffing so the GET response is useful without forcing
   // the caller to know the exact result type.
+  if (job.kind === 'workday' && job.result && typeof job.result === 'object') {
+    const day = job.result as DayRunResult;
+    return {
+      ...base,
+      summary: {
+        cyclesRun: day.cyclesRun,
+        completionRate: day.completionRate,
+        toolCallsUsed: day.toolCallsUsed,
+        stopReason: day.stopReason,
+      },
+      result: day,
+    };
+  }
   if (job.kind === 'multi-day' && Array.isArray(job.result)) {
     const days = job.result as DayRunResult[];
     const avg =

@@ -90,11 +90,12 @@ describe('CorpGen wiring', () => {
     expect(md).toContain('good day');
   });
 
-  it('executeTool routes cg_run_workday through the integration bridge', async () => {
+  it('executeTool kicks off cg_run_workday in the background and returns a job id', async () => {
     const json = await executeTool('cg_run_workday', { maxCycles: 1 });
-    const parsed = JSON.parse(json) as { summary: string; day: { stopReason: string } };
-    expect(parsed.summary).toContain('CorpGen workday');
-    expect(parsed.day.stopReason).toBe('plan_complete');
+    const parsed = JSON.parse(json) as { jobId: string; status: string; message: string };
+    expect(parsed.jobId).toMatch(/[0-9a-f-]{8,}/);
+    expect(['queued', 'running', 'succeeded']).toContain(parsed.status);
+    expect(parsed.message).toContain('CorpGen workday');
   });
 
   it('buildCassidyExecutor merges static + live MCP tools without duplicates', async () => {
