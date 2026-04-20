@@ -21,6 +21,8 @@ Cassidy is both a Microsoft Agent Framework bot (Teams-facing, OBO-authenticated
 | Organisation-scale runs (§3.7) | `runOrganization` in [cassidy/src/corpgen/digitalEmployee.ts](../cassidy/src/corpgen/digitalEmployee.ts) |
 | Cassidy ↔ CorpGen bridge | [cassidy/src/corpgenIntegration.ts](../cassidy/src/corpgenIntegration.ts) |
 | Async job runner (App Service ~230 s cap) | [cassidy/src/corpgenJobs.ts](../cassidy/src/corpgenJobs.ts) |
+| Autonomous workday phases + work-hours gating | [cassidy/src/corpgenIntegration.ts](../cassidy/src/corpgenIntegration.ts) (`WorkdayPhase`, `phasePresets`, `checkWorkHours`) |
+| In-process daily scheduler (init / cycle / reflect / monthly) | [cassidy/src/corpgenScheduler.ts](../cassidy/src/corpgenScheduler.ts) |
 
 ## End-to-end workday lifecycle
 
@@ -93,7 +95,7 @@ All four CorpGen routes are operator-only. They are registered **before** `serve
 
 | Route | Method | Body / params | Sync | Async |
 |---|---|---|---|---|
-| `/api/corpgen/run` | `POST` | `maxCycles`, `maxWallclockMs`, `maxToolCalls`, `employeeId` | yes | no |
+| `/api/corpgen/run` | `POST` | `phase` (`init`/`cycle`/`reflect`/`monthly`/`manual`), `force`, `maxCycles`, `maxWallclockMs`, `maxToolCalls`, `employeeId`, `async` | yes | yes |
 | `/api/corpgen/multi-day` | `POST` | `days` (1–30), plus run caps, plus `async: true` | yes | yes |
 | `/api/corpgen/organization` | `POST` | `members[]` (1–10), `days` (1–30), `concurrent`, plus `async: true` | yes | yes |
 | `/api/corpgen/jobs` | `GET` | — | n/a | lists recent jobs |
@@ -123,6 +125,54 @@ Invoke-RestMethod `
   -Headers @{ 'x-scheduled-secret' = $ss }
 ```
 
+## Autonomous scheduling
+
+Cassidy runs its CorpGen workday **unattended** via the in-process scheduler in [cassidy/src/corpgenScheduler.ts](../cassidy/src/corpgenScheduler.ts). A 60 s tick from `index.ts` checks the wall clock (UTC) against four phase windows and fires `POST /api/corpgen/run` (in-process, not HTTP) with the matching `phase`:
+
+| Phase | Window (UTC, weekdays) | Preset (cycles / wallclock / tool calls) | CorpGen analogue |
+|---|---|---|---|
+| `init` | 08:50 | 1 / 90 s / 30 | Day Init (Algorithm 1, lines 1–6) |
+| `cycle` | every 20 min, 09:00 → 16:40 | 1 / 90 s / 50 | Single execution cycle |
+| `reflect` | 16:30 | 1 / 120 s / 50 | Day End reflection + `judgeDay` |
+| `monthly` | 1st of month, 08:00 | 2 / 240 s / 100 | Regenerate monthly plan + 2 priming cycles |
+
+Toggle with `CORPGEN_SCHEDULER_ENABLED=false`. Started by `startCorpGenScheduler()` and stopped on `SIGTERM`/`SIGINT`.
+
+### Work-hours / weekday gating
+
+`runWorkdayForCassidy(turn?, opts)` wraps every non-`manual` phase in `checkWorkHours()`. If the current UTC moment is a weekend or outside 07–18, it returns a synthetic `DayRunResult` in 0 ms with one of three new `stopReason` values:
+
+- `'skipped:weekend'`
+- `'skipped:before_hours'`
+- `'skipped:after_hours'`
+
+Manual runs (`phase: 'manual'` or no phase) ignore the gate. To override the gate for a forced phase test, send `force: true` in the body of `/api/corpgen/run`.
+
+```powershell
+# Force a reflect phase right now, ignoring work-hours gate
+$ss = (az webapp config appsettings list -g rg-cassidy-ops-agent `
+  -n cassidyopsagent-webapp `
+  --query "[?name=='SCHEDULED_SECRET'].value" -o tsv)
+$body = @{ phase = 'reflect'; force = $true; async = $true } | ConvertTo-Json
+Invoke-RestMethod -Method POST `
+  -Uri 'https://cassidyopsagent-webapp.azurewebsites.net/api/corpgen/run' `
+  -Headers @{ 'x-scheduled-secret' = $ss } -ContentType 'application/json' -Body $body
+```
+
+### Function App alternative (future)
+
+[cassidy/azure-function-trigger/src/corpgenTriggers.ts](../cassidy/azure-function-trigger/src/corpgenTriggers.ts) holds Timer-trigger handlers (`corpgenInit`, `corpgenCycle`, `corpgenReflect`, `corpgenMonthly`) ready to drive the same `/api/corpgen/run?phase=…&force=…` HTTP endpoints from a separate Function App if/when the Azure Function trigger surface is provisioned. Today the in-process scheduler is the production path.
+
+### Autonomy verification
+
+Three operator scripts under [skill-assets/](../skill-assets/) exercise the scheduling surface end-to-end:
+
+| Script | What it does |
+|---|---|
+| [autonomy-battery.ps1](../skill-assets/autonomy-battery.ps1) | A1 unforced `cycle` (proves gating returns `skipped:*` in 0 s after-hours), A2–A5 forced `init`/`cycle`/`reflect`/`monthly` (async), A6 `/jobs` health |
+| [autonomy-sequential.ps1](../skill-assets/autonomy-sequential.ps1) | Same four phases one at a time (avoids LLM/MCP lane contention) |
+| [corpgen-battery.ps1](../skill-assets/corpgen-battery.ps1) | 6-job async load test against `/api/corpgen/run` |
+
 ## Faithful to the paper vs. extensions
 
 | Area | Status | Notes |
@@ -141,6 +191,7 @@ Invoke-RestMethod `
 | LLM-as-judge (`judgeTask` / `judgeDay`) | Extension | Adds artifact-level and day-level grading on top of the paper's framework. |
 | Comm-channel fallback (Mail ↔ Teams) | Extension | Practical safety net for the M365 surface; not in the paper. |
 | Operator HTTP harness + async jobs | Extension | Required by App Service's ~230 s response cap and operator workflows. |
+| Autonomous in-process scheduler + work-hours gating | Extension | Drives `init`/`cycle`/`reflect`/`monthly` phases on a UTC clock so the digital employee runs unattended. Gating returns synthetic `skipped:*` `DayRunResult`s outside Mon–Fri 07–18 UTC. |
 
 In short: Cassidy is **algorithmically faithful** to the paper today; the **operational benchmark sweeps** are now possible (the surfaces and async runner exist) but the headline completion-rate numbers from the paper still need empirical replication.
 

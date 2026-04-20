@@ -4,6 +4,27 @@ All notable changes to the Cassidy Enterprise Operations Manager are documented 
 
 ## [unreleased] — 2026-04-20
 
+### Autonomous workday phases + in-process scheduler
+
+- **`WorkdayPhase` type** — [cassidy/src/corpgenIntegration.ts](cassidy/src/corpgenIntegration.ts) now models the four CorpGen-style daily phases (`'init' | 'cycle' | 'reflect' | 'monthly'`) plus a `'manual'` escape hatch. Each phase has a preset (`phasePresets()`) sized for its job: `init` 1 cycle / 90 s wallclock / 30 tool calls, `cycle` 1 cycle / 90 s / 50, `reflect` 1 cycle / 120 s / 50, `monthly` 2 cycles / 240 s / 100. `'manual'` keeps the original 10/300 s/200 caller-supplied defaults.
+- **Work-hours / weekday gating** — `checkWorkHours()` returns `{inHours, reason}` for the phase. Non-`manual` phases that fall outside Mon–Fri 07–18 UTC return a synthetic `DayRunResult` in 0 ms with a new `stopReason` of `'skipped:weekend'`, `'skipped:before_hours'`, or `'skipped:after_hours'` (extended in [cassidy/src/corpgen/types.ts](cassidy/src/corpgen/types.ts)). Manual runs always execute. The `force: true` request flag bypasses the gate for testing.
+- **`POST /api/corpgen/run` extension** — Now accepts `{phase, force}` in the body in addition to existing run caps. `async: true` enqueues into the same `corpgenJobs` runner. The previously-duplicated `/api/corpgen/jobs[/:id]` routes were removed (the pair is now defined exactly once and mounts before `authorizeJWT`).
+- **In-process scheduler** — New [cassidy/src/corpgenScheduler.ts](cassidy/src/corpgenScheduler.ts) starts a 60 s tick from `index.ts`. It fires:
+  - **08:50 UTC weekdays** — `init` phase (Day Init: monthly + daily plan generation, identity load)
+  - **Every 20 min, 09:00–16:40 UTC weekdays** — `cycle` phase (single ReAct cycle against the next runnable task)
+  - **16:30 UTC weekdays** — `reflect` phase (Day End reflection + `judgeDay`)
+  - **08:00 UTC on the 1st of each month** — `monthly` phase (regenerate monthly plan + 2 priming cycles)
+  Disabled via `CORPGEN_SCHEDULER_ENABLED=false`. Started by `startCorpGenScheduler()` and stopped on SIGTERM/SIGINT in [cassidy/src/index.ts](cassidy/src/index.ts).
+- **Function App stub (future)** — [cassidy/azure-function-trigger/src/corpgenTriggers.ts](cassidy/azure-function-trigger/src/corpgenTriggers.ts) holds Timer-trigger handlers (`corpgenInit`, `corpgenCycle`, `corpgenReflect`, `corpgenMonthly`) for if/when a separate Function App is provisioned to drive the same `/api/corpgen/run?phase=…&force=…` HTTP endpoints. Not built into the webapp deploy.
+- **Test batteries** — Three new operator scripts under [skill-assets/](skill-assets/):
+  - [autonomy-battery.ps1](skill-assets/autonomy-battery.ps1) — A1 unforced cycle (proves gating), A2–A5 forced init/cycle/reflect/monthly (async), A6 scheduler health
+  - [autonomy-sequential.ps1](skill-assets/autonomy-sequential.ps1) — same four phases one-at-a-time
+  - [corpgen-battery.ps1](skill-assets/corpgen-battery.ps1) — 6-job async load test
+- **Live verification (2026-04-20)** —
+  - **Autonomy gating proved**: A1 (unforced `cycle` at 20:42 UTC, after-hours) returned `200` with `stopReason='skipped:after_hours'` in 0 ms.
+  - **Manual Teams interaction intact**: Smoke message sent to Cassidy in Teams at 22:03; reply at 22:04 correctly identified the current CorpGen phase ("Pre-open triage / morning-brief assembly, UTC 21:04 → AEDT 08:04 local"), confirmed work-hours gating ("Yes — quiet hours until 09:00 local; outbound nudges queued, internal prep only"), and named the top of today's plan. Adding the in-process scheduler did not regress the chat path.
+  - **Known follow-ups (non-blocking)**: 1) workday concurrency semaphore (max 1 in-flight per `employeeId`); 2) mid-cycle wallclock check inside `runCycle` so phase presets actually preempt long cycles; 3) wire 5 cycle archetypes (inbox triage / meeting prep / commitment chase / doc hygiene / EOD digest) as a `kind` enum on `DailyTask`; 4) hook `experientialLearning` trajectory capture into the production Day-End path.
+
 ### MCP tooling fix — Work IQ tools now load on every turn
 
 - **Root cause** — Every production turn since deploy showed `liveMcp:0, static:51, total:51` because the bot's discovery call hit `AADSTS82001: Agentic application '151d7bf7-…' is not permitted to request app-only tokens for resource 'ea9ffc3e-…'`. Agentic apps are barred by Entra from `client_credentials`-with-secret. The `@microsoft/agents-hosting` SDK's `MsalTokenProvider.getAgenticApplicationToken()` checks for `WIDAssertionFile` → `FICClientId` (managed-identity FIC) → cert files, then silently falls back to `clientSecret` — which the platform rejects.

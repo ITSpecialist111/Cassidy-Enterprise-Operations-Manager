@@ -29,7 +29,7 @@ Cassidy is an AI-powered operations manager that autonomously handles:
 - **Report Generation** — Automated insights and performance summaries
 - **Voice & Call Management** — Integration with call systems and voice processing
 - **Calendar & Scheduling** — Live calendar scanning, event monitoring, and deadline management via MCP CalendarTools
-- **Autonomous workdays (CorpGen)** — Self-directed digital employee that plans, executes, reflects, and learns across days and across an organisation of agents
+- **Autonomous workdays (CorpGen)** — Self-directed digital employee that plans, executes, reflects, and learns across days and across an organisation of agents. Driven unattended by an in-process scheduler that fires `init` / `cycle` / `reflect` / `monthly` phases on a UTC clock with Mon–Fri 07–18 work-hours gating.
 
 ## Architecture
 
@@ -54,6 +54,7 @@ cassidy/
 │   ├── workQueue/                # Work decomposition & queue management
 │   ├── corpgen/                  # CorpGen digital-employee runtime (paper-faithful)
 │   ├── corpgenIntegration.ts     # Bridge: Cassidy tools ↔ CorpGen ToolExecutor
+│   ├── corpgenScheduler.ts       # In-process daily scheduler (init/cycle/reflect/monthly UTC)
 │   └── corpgenJobs.ts            # In-memory async job runner for long sweeps
 ├── ToolingManifest.json          # MCP server declarations (Calendar, Mail, Planner, Teams)
 ├── publish/                      # Azure App Service deployment package
