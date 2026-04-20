@@ -20,13 +20,15 @@ Rules:
 - Include a toolHint if applicable: findUser, sendEmail, createPlannerTask, sendTeamsMessage, scheduleCalendarEvent, readSharePointList, getOverdueTasks, getPendingApprovals
 - Keep descriptions action-oriented and specific
 - Maximum 10 subtasks. If the goal is simple (1-2 steps), return 1-2 subtasks.
-- Return ONLY a valid JSON array — no markdown, no explanation.
+- Return ONLY a valid JSON object with a "subtasks" array — no markdown, no explanation.
 
 Format:
-[
-  { "id": "s1", "description": "...", "toolHint": "...", "dependsOn": [] },
-  { "id": "s2", "description": "...", "toolHint": "...", "dependsOn": ["s1"] }
-]`;
+{
+  "subtasks": [
+    { "id": "s1", "description": "...", "toolHint": "...", "dependsOn": [] },
+    { "id": "s2", "description": "...", "toolHint": "...", "dependsOn": ["s1"] }
+  ]
+}`;
 
 export async function decomposeGoal(goal: string): Promise<Subtask[]> {
   const openai = getOpenAI();
@@ -40,16 +42,35 @@ export async function decomposeGoal(goal: string): Promise<Subtask[]> {
           { role: 'system', content: DECOMPOSE_PROMPT },
           { role: 'user', content: goal },
         ],
-        max_completion_tokens: 1000,
+        // GPT-5 reasoning models consume a large chunk of the budget for hidden
+        // reasoning tokens. 1000 was empirically too small (decomposer returned
+        // empty output, JSON.parse threw 'Unexpected end of JSON input').
+        max_completion_tokens: 4000,
+        response_format: { type: 'json_object' },
       },
       { signal: controller.signal },
     );
     clearTimeout(timeoutHandle);
 
-    const raw = response.choices[0]?.message?.content?.trim() ?? '[]';
-    // Strip markdown code fences if present
+    const raw = response.choices[0]?.message?.content?.trim() ?? '';
+    if (!raw) {
+      console.warn('[GoalDecomposer] LLM returned empty content; falling back to single-subtask plan');
+      return [{ id: 's1', description: goal, dependsOn: [], status: 'pending' }];
+    }
+    // Strip markdown code fences if present (defensive — response_format=json_object should prevent this)
     const json = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    const parsed = JSON.parse(json) as Array<{
+    // response_format=json_object returns an object, not an array. Accept either.
+    const parsedRaw = JSON.parse(json);
+    const arr = Array.isArray(parsedRaw)
+      ? parsedRaw
+      : Array.isArray((parsedRaw as { subtasks?: unknown }).subtasks)
+        ? (parsedRaw as { subtasks: unknown[] }).subtasks
+        : Array.isArray((parsedRaw as { steps?: unknown }).steps)
+          ? (parsedRaw as { steps: unknown[] }).steps
+          : Array.isArray((parsedRaw as { plan?: unknown }).plan)
+            ? (parsedRaw as { plan: unknown[] }).plan
+            : [];
+    const parsed = arr as Array<{
       id: string;
       description: string;
       toolHint?: string;
