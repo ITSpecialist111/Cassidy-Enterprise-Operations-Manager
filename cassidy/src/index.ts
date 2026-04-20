@@ -31,6 +31,10 @@ import { userRateLimiter } from './rateLimiter';
 import { getAnalytics, getAllTimeToolUsage } from './analytics';
 import { exportConversations } from './conversationExport';
 import { getActiveSubscriptions, startAutoRenewal, stopAutoRenewal } from './webhookManager';
+import { requireEasyAuth } from './easyAuth';
+import { getRecentActivity } from './logger';
+import { listAgents } from './orchestrator/agentRegistry';
+import path from 'path';
 
 // Initialise Application Insights early (before route handlers)
 initTelemetry();
@@ -442,6 +446,95 @@ server.get('/api/corpgen/jobs', async (req: express.Request, res: Response) => {
   }
   const { listJobs, summariseJob } = await import('./corpgenJobs');
   res.status(200).json({ jobs: listJobs().map(summariseJob) });
+});
+
+// ---------------------------------------------------------------------------
+// Mission Control dashboard — Easy Auth (Entra) protected JSON API
+// ---------------------------------------------------------------------------
+
+const dashApi = express.Router();
+dashApi.use(requireEasyAuth);
+
+dashApi.get('/me', (req, res: Response) => {
+  const p = (req as express.Request & { easyAuthPrincipal?: { oid?: string; email?: string; name?: string; tenantId?: string } }).easyAuthPrincipal;
+  res.status(200).json({ ok: true, principal: p });
+});
+
+dashApi.get('/snapshot', async (_req, res: Response) => {
+  const uptimeMs = Date.now() - startTime;
+  let agents: Array<{ id: string; name: string; description?: string; expertise?: string[] }> = [];
+  try {
+    const list = await listAgents();
+    agents = list.map((a) => {
+      let expertise: string[] = [];
+      try { expertise = a.expertise ? JSON.parse(a.expertise) : []; } catch { /* ignore */ }
+      return {
+        id: String(a.rowKey),
+        name: String(a.displayName),
+        description: a.description,
+        expertise,
+      };
+    });
+  } catch {
+    agents = [];
+  }
+  res.status(200).json({
+    agent: 'Cassidy',
+    version: '1.7.0',
+    uptimeHours: Number((uptimeMs / 3_600_000).toFixed(2)),
+    startTime: new Date(startTime).toISOString(),
+    features: {
+      mcp: features.mcpAvailable,
+      speech: features.speechConfigured,
+      openai: features.openAiConfigured,
+      appIdentity: features.appIdentityConfigured,
+      appInsights: features.appInsightsConfigured,
+    },
+    circuits: {
+      openAi: openAiCircuit.getState(),
+      graph: graphCircuit.getState(),
+      mcp: mcpCircuit.getState(),
+    },
+    caches: {
+      userInsights: userInsightCache.size,
+      memories: memoryCache.size,
+      toolResults: getToolCacheSize(),
+    },
+    rateLimiter: { trackedUsers: userRateLimiter.getTrackedUsers() },
+    webhooks: { activeSubscriptions: getActiveSubscriptions().length },
+    agents,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+dashApi.get('/activity', (req, res: Response) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500);
+  const level = (req.query.level as 'debug' | 'info' | 'warn' | 'error' | undefined) || undefined;
+  const moduleFilter = (req.query.module as string | undefined) || undefined;
+  res.status(200).json({ entries: getRecentActivity({ limit, level, module: moduleFilter }) });
+});
+
+dashApi.get('/jobs', async (_req, res: Response) => {
+  const { listJobs, summariseJob } = await import('./corpgenJobs');
+  res.status(200).json({ jobs: listJobs().map(summariseJob) });
+});
+
+dashApi.get('/jobs/:id', async (req, res: Response) => {
+  const { getJob, summariseJob } = await import('./corpgenJobs');
+  const job = getJob(req.params.id);
+  if (!job) { res.status(404).json({ error: 'not found' }); return; }
+  res.status(200).json(summariseJob(job));
+});
+
+server.use('/api/dashboard', dashApi);
+
+// Static dashboard assets at /dashboard (SPA — fall back to index.html for client routes).
+const dashboardDir = path.resolve(__dirname, '..', 'dashboard', 'dist');
+server.use('/dashboard', express.static(dashboardDir, { index: 'index.html', maxAge: '5m' }));
+server.get(/^\/dashboard(\/.*)?$/, (_req, res: Response) => {
+  res.sendFile(path.join(dashboardDir, 'index.html'), (err) => {
+    if (err) res.status(404).send('Dashboard not built. Run `npm run build` in cassidy/dashboard.');
+  });
 });
 
 // Apply JWT auth middleware for all routes below this point

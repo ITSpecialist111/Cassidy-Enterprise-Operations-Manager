@@ -33,6 +33,43 @@ function emit(entry: LogEntry): void {
     case 'warn':  console.warn(json);  break;
     default:      console.log(json);   break;
   }
+  pushToActivityRing(entry);
+}
+
+// ---------------------------------------------------------------------------
+// In-memory activity ring buffer (read by the Mission Control dashboard).
+// Last N log entries are retained per-process so the dashboard can show a
+// live tail without round-tripping to App Insights.
+// ---------------------------------------------------------------------------
+
+const ACTIVITY_RING_SIZE = 500;
+const _activityRing: LogEntry[] = [];
+
+function pushToActivityRing(entry: LogEntry): void {
+  _activityRing.push(entry);
+  if (_activityRing.length > ACTIVITY_RING_SIZE) _activityRing.shift();
+}
+
+/** Return the most recent log entries (newest first), optionally filtered. */
+export function getRecentActivity(options: {
+  limit?: number;
+  level?: LogLevel;
+  module?: string;
+} = {}): LogEntry[] {
+  const limit = Math.min(options.limit ?? 100, ACTIVITY_RING_SIZE);
+  let out = _activityRing.slice().reverse();
+  if (options.level) {
+    const min = LOG_LEVELS[options.level];
+    out = out.filter((e) => LOG_LEVELS[e.level] >= min);
+  }
+  if (options.module) {
+    out = out.filter((e) => e.module === options.module);
+  }
+  return out.slice(0, limit);
+}
+
+export function _resetActivityRingForTest(): void {
+  _activityRing.length = 0;
 }
 
 export interface LogContext {

@@ -3,10 +3,19 @@ $ErrorActionPreference = 'Stop'
 $src = "C:\Users\graham\Documents\GitHub\Cassidy Autonomous\cassidy"
 Push-Location $src
 try {
-    Write-Host "Building locally (npm run build)..."
+    Write-Host "Building backend (npm run build)..."
     npm run build *>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "tsc build failed" }
     if (-not (Test-Path "dist\index.js")) { throw "dist/index.js missing after build" }
+
+    if (Test-Path "dashboard\package.json") {
+        Write-Host "Building dashboard (npm --prefix dashboard run build)..."
+        npm --prefix dashboard install --silent --no-audit --no-fund *>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "dashboard npm install failed" }
+        npm --prefix dashboard run build *>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "dashboard build failed" }
+        if (-not (Test-Path "dashboard\dist\index.html")) { throw "dashboard/dist/index.html missing" }
+    }
 } finally { Pop-Location }
 
 $staging = Join-Path $env:TEMP 'cassidy-deploy2'
