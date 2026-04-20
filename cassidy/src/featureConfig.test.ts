@@ -45,7 +45,7 @@ describe('featureConfig — default values', () => {
     expect(config.autonomousBootDelayMs).toBe(15_000);
     expect(config.autonomousSubtaskTimeoutMs).toBe(60_000);
     expect(config.autonomousBackoffBaseMs).toBe(60_000);
-    expect(config.goalDecomposeTimeoutMs).toBe(30_000);
+    expect(config.goalDecomposeTimeoutMs).toBe(90_000);
     expect(config.agentFetchTimeoutMs).toBe(30_000);
     expect(config.graphTimeoutMs).toBe(10_000);
     expect(config.graphCacheTtlMs).toBe(60_000);

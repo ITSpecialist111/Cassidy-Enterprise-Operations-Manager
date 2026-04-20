@@ -221,9 +221,25 @@ Do not ask questions — make reasonable decisions and proceed.`;
 async function notifyUser(item: WorkItem, message: string): Promise<void> {
   if (!_adapter) return;
 
-  const ref = _conversationRefs.get(item.conversationId);
+  // The in-memory map is keyed by userId (loaded once at startup from the
+  // user registry). Look there first, then fall back to a live storage read
+  // so notifications survive restarts and brand-new conversations.
+  let ref = _conversationRefs.get(item.userId);
   if (!ref) {
-    console.warn(`[AutonomousLoop] No conversation ref for ${item.conversationId} — cannot notify`);
+    try {
+      const { getStoredConversationRef } = await import('../proactive/userRegistry');
+      const stored = await getStoredConversationRef(item.userId);
+      if (stored) {
+        ref = stored;
+        _conversationRefs.set(item.userId, stored);
+      }
+    } catch (err) {
+      console.warn('[AutonomousLoop] Live conversation-ref lookup failed:', err);
+    }
+  }
+
+  if (!ref) {
+    console.warn(`[AutonomousLoop] No conversation ref for user ${item.userId} (conv ${item.conversationId}) — cannot notify`);
     return;
   }
 
@@ -232,7 +248,7 @@ async function notifyUser(item: WorkItem, message: string): Promise<void> {
     await _adapter.continueConversation(botAppId, ref, async (context: import('@microsoft/agents-hosting').TurnContext) => {
       await context.sendActivity(message);
     });
-    console.log(`[AutonomousLoop] Notified user in conversation ${item.conversationId}`);
+    console.log(`[AutonomousLoop] Notified user ${item.userId} in conversation ${item.conversationId}`);
   } catch (err) {
     console.error('[AutonomousLoop] Failed to notify user:', err);
   }

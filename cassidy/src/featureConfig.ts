@@ -124,7 +124,7 @@ function readConfig(): AppConfig {
     autonomousBootDelayMs: Number(process.env.AUTONOMOUS_BOOT_DELAY_MS) || 15_000,
     autonomousSubtaskTimeoutMs: Number(process.env.AUTONOMOUS_SUBTASK_TIMEOUT_MS) || 60_000,
     autonomousBackoffBaseMs: Number(process.env.AUTONOMOUS_BACKOFF_BASE_MS) || 60_000,
-    goalDecomposeTimeoutMs: Number(process.env.GOAL_DECOMPOSE_TIMEOUT_MS) || 30_000,
+    goalDecomposeTimeoutMs: Number(process.env.GOAL_DECOMPOSE_TIMEOUT_MS) || 90_000,
     agentFetchTimeoutMs: Number(process.env.AGENT_FETCH_TIMEOUT_MS) || 30_000,
     graphTimeoutMs: Number(process.env.GRAPH_TIMEOUT_MS) || 10_000,
     graphCacheTtlMs: Number(process.env.GRAPH_CACHE_TTL_MS) || 60_000,
