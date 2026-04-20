@@ -128,51 +128,57 @@ async function getServerConfigs(context?: TurnContext): Promise<MCPServerConfig[
   if (_serverConfigCache && now < _serverConfigExpiry) return _serverConfigCache;
 
   const blueprintId = process.env.MicrosoftAppId ?? process.env.agent_id ?? '';
-  let discovered: MCPServerConfig[];
 
-  try {
-    if (context) {
-      // Preferred: TurnContext overload — performs OBO token exchange automatically.
-      const { agentApplication } = require('../agent') as { agentApplication: { authorization: import('@microsoft/agents-hosting').Authorization } };
-      discovered = await mcpService.listToolServers(
+  // ── Preferred path: OBO via TurnContext ─────────────────────────────────
+  // Agentic applications cannot use client_credentials grant (Entra rejects
+  // with AADSTS82001), so OBO via an active user turn is the ONLY path that
+  // can work in production.
+  if (context) {
+    try {
+      const { agentApplication } = require('../agent') as {
+        agentApplication: { authorization: import('@microsoft/agents-hosting').Authorization };
+      };
+      const discovered = await mcpService.listToolServers(
         context,
         agentApplication.authorization,
         getAuthHandlerName(),
         undefined,
         getToolOptions(),
       );
-
-      // If OBO returns no servers, try app-only discovery as a fallback to avoid empty tool turns.
-      if (discovered.length === 0) {
-        console.warn('[MCP] OBO discovery returned 0 servers; trying app-only fallback');
-        discovered = await discoverViaClientCredentials(blueprintId);
-      }
-    } else {
-      discovered = await discoverViaClientCredentials(blueprintId);
+      _serverConfigCache = discovered;
+      _serverConfigExpiry = now + SERVER_CONFIG_TTL_MS;
+      console.log(`[MCP] OBO discovered ${discovered.length} server(s) from tooling gateway`);
+      return _serverConfigCache;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack?.split('\n').slice(0, 4).join(' | ') : '';
+      console.warn(`[MCP] OBO discovery FAILED: ${msg}${stack ? ` stack=${stack}` : ''}`);
+      // Do NOT cache — next turn should retry OBO freshly.
+      _serverConfigCache = null;
+      _serverConfigExpiry = 0;
+      return [];
     }
+  }
 
+  // ── Fallback: client credentials ────────────────────────────────────────
+  // Only useful for autonomous (no-context) paths where a client secret was
+  // explicitly provided. Returns [] gracefully otherwise.
+  try {
+    const discovered = await discoverViaClientCredentials(blueprintId);
     _serverConfigCache = discovered;
     _serverConfigExpiry = now + SERVER_CONFIG_TTL_MS;
-    console.log(`[MCP] Discovered ${_serverConfigCache.length} server(s) from tooling gateway`);
+    if (discovered.length > 0) {
+      console.log(`[MCP] Client-credentials discovered ${discovered.length} server(s)`);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-
-    // Second chance: if the preferred path failed, try app-only discovery before giving up.
-    if (context) {
-      try {
-        const fallback = await discoverViaClientCredentials(blueprintId);
-        _serverConfigCache = fallback;
-        _serverConfigExpiry = now + SERVER_CONFIG_TTL_MS;
-        console.warn(`[MCP] Context discovery failed (${msg}). App-only fallback discovered ${fallback.length} server(s).`);
-        return _serverConfigCache;
-      } catch (fallbackErr) {
-        const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-        console.warn(`[MCP] Fallback discovery also failed: ${fallbackMsg}`);
-      }
+    // Agentic apps are blocked from client_credentials by the platform — suppress the noise.
+    if (/AADSTS82001|not permitted to request app-only/i.test(msg)) {
+      console.warn('[MCP] Client-credentials not available for agentic app (expected); MCP tools require an active user session.');
+    } else {
+      console.warn(`[MCP] Client-credentials discovery failed: ${msg}`);
     }
-
-    console.warn(`[MCP] Failed to discover servers: ${msg}. Tool definitions will be empty.`);
-    _serverConfigCache = _serverConfigCache ?? [];
+    _serverConfigCache = [];
     _serverConfigExpiry = now + SERVER_CONFIG_TTL_MS;
   }
 
@@ -180,7 +186,8 @@ async function getServerConfigs(context?: TurnContext): Promise<MCPServerConfig[
 }
 
 async function buildToolDefinitions(context?: TurnContext): Promise<ChatCompletionTool[]> {
-  if (_toolDefinitionCache) return _toolDefinitionCache;
+  // Only serve from cache when we actually have tools — empty cache should retry.
+  if (_toolDefinitionCache && _toolDefinitionCache.length > 0) return _toolDefinitionCache;
 
   const configs = await getServerConfigs(context);
   const tools: ChatCompletionTool[] = [];
