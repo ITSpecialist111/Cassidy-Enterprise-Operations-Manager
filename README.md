@@ -190,6 +190,7 @@ flowchart TB
 - Meeting transcription analysis with action item extraction
 - Conversation analytics — avg/p95 response times, top tools/users, rate-limited/degraded counts
 - Real-time ops dashboard via `/api/analytics` endpoint
+- **Mission Control SPA** at `/dashboard/` (Entra SSO via App Service Easy Auth) — live ops, CorpGen runs, org agents, activity tail. See [cassidy/dashboard/](cassidy/dashboard/) and the dashboard section in [CHANGELOG.md](CHANGELOG.md)
 
 ### 🔒 Security & Compliance
 - Input sanitization — prompt injection guard (5 pattern categories + control char stripping)

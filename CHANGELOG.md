@@ -4,6 +4,21 @@ All notable changes to the Cassidy Enterprise Operations Manager are documented 
 
 ## [unreleased] — 2026-04-20
 
+### Mission Control dashboard (Entra SSO)
+
+- **React SPA** — New [cassidy/dashboard/](cassidy/dashboard/) (React 19 + Vite 6 + TanStack Query) served by the webapp at `/dashboard/`. Pages: Live Operations (uptime, circuit breakers, features, caches), CorpGen Runs (job table), Organisation (registered specialist agents). Right-side blade live-tails the activity ring buffer (5 s polling).
+- **Easy Auth v2** — App Service authsettingsV2 enabled in passive mode (`requireAuthentication=false`, `unauthenticatedClientAction=AllowAnonymous`) against new Entra app `cassidy-dashboard` (appId `21fe97b1-b59e-40b5-af6d-09b19ce24cf0`, audience `AzureADMyOrg`, redirect `…/.auth/login/aad/callback`). Bot's `/api/messages` JWT auth is untouched.
+- **Backend gate** — New [cassidy/src/easyAuth.ts](cassidy/src/easyAuth.ts) decodes the `X-MS-CLIENT-PRINCIPAL` header App Service injects after Entra SSO, attaches a typed principal, and 401s with `{ loginUrl }` otherwise. When `MicrosoftAppTenantId` is set it also enforces a tenant allowlist (currently `e4ccbd32-1a13-4cb6-8fda-c392e7ea359f` / `ABSx02771022`).
+- **Dashboard API** — Four new routes registered before the JWT middleware in [cassidy/src/index.ts](cassidy/src/index.ts), all gated by `requireEasyAuth`:
+  - `GET /api/dashboard/me` — current principal
+  - `GET /api/dashboard/snapshot` — uptime, features, circuits, caches, rate limiter, webhooks, registered agents
+  - `GET /api/dashboard/activity?limit=&level=&module=` — recent log entries
+  - `GET /api/dashboard/jobs` and `/jobs/:id` — CorpGen async job list/detail (Easy-Auth-gated mirror of the secret-protected operator endpoints)
+- **Activity ring buffer** — [cassidy/src/logger.ts](cassidy/src/logger.ts) now retains the last 500 log entries in-memory and exposes `getRecentActivity({ limit, level, module })`. Every `logger.{debug,info,warn,error}` call is automatically captured.
+- **Static serving** — Express `express.static('dashboard/dist', …)` mounted at `/dashboard` with SPA fallback to `index.html` so client-side routes survive page refresh.
+- **Build pipeline** — [skill-assets/stage-deploy.ps1](skill-assets/stage-deploy.ps1) now `npm install`s and `npm run build`s `cassidy/dashboard/` before zipping, and includes `dashboard/dist/` in the deploy. `node_modules` is excluded by the existing `/XD node_modules` rule.
+- **Live verification** — `https://cassidyopsagent-webapp.azurewebsites.net/dashboard/` returns 200 HTML; `/api/dashboard/snapshot` returns 401+`loginUrl` when unauthenticated; `/.auth/login/aad` 302s to `login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize` for the dashboard app.
+
 ### CorpGen wiring, async jobs, deploy hardening
 
 - **CorpGen ↔ Cassidy bridge** — New [cassidy/src/corpgenIntegration.ts](cassidy/src/corpgenIntegration.ts) exposes `buildCassidyExecutor`, `runWorkdayForCassidy`, `runMultiDayForCassidy`, `runOrganizationForCassidy`, plus `summariseDayForTeams` / `summariseMultiDay` / `summariseOrganization`. Defaults: `maxCycles=10`, `maxWallclockMs=5 min`, `maxToolCalls=200`, `ignoreSchedule=true`, `withCommFallback=true`. Live MCP tool definitions (delegated/OBO from a Teams turn) are merged with static tools and deduped by name.
