@@ -4,6 +4,20 @@ All notable changes to the Cassidy Enterprise Operations Manager are documented 
 
 ## [unreleased] — 2026-04-20
 
+### MCP tooling fix — Work IQ tools now load on every turn
+
+- **Root cause** — Every production turn since deploy showed `liveMcp:0, static:51, total:51` because the bot's discovery call hit `AADSTS82001: Agentic application '151d7bf7-…' is not permitted to request app-only tokens for resource 'ea9ffc3e-…'`. Agentic apps are barred by Entra from `client_credentials`-with-secret. The `@microsoft/agents-hosting` SDK's `MsalTokenProvider.getAgenticApplicationToken()` checks for `WIDAssertionFile` → `FICClientId` (managed-identity FIC) → cert files, then silently falls back to `clientSecret` — which the platform rejects.
+- **Infrastructure fix (live)**:
+  - Created **user-assigned MI** `cassidy-agentic-mi` (clientId `b264027d-ca88-4105-8947-559b58f021c6`, principalId `bdb0f4e9-8212-4f2e-ac3f-e0b7d2fd3131`). User-assigned is required because msal-node's `ManagedIdentityApplication` needs `userAssignedClientId` — the SDK does not consume the system-assigned MI.
+  - Attached the MI to `cassidyopsagent-webapp`.
+  - Replaced the federated identity credential on Cassidy Blueprint app reg `151d7bf7-772f-489b-b407-a8541f3eb7a6`: deleted `CassidyBlueprint-MSI` (system-assigned subject) and created `CassidyBlueprint-UAMSI` (subject = user-assigned MI principalId, audience `api://AzureADTokenExchange`).
+  - Set env var `connections__service_connection__settings__FICClientId=b264027d-…` so the SDK takes the FIC path instead of the broken secret path.
+- **Code fix** — [cassidy/src/tools/mcpToolSetup.ts](cassidy/src/tools/mcpToolSetup.ts) (commit `6c1c395`):
+  - OBO discovery errors now surface their real `name`, `message`, and short stack instead of being masked by a redundant 82001 from the fallback.
+  - Empty tool cache is no longer persisted, so the next turn retries cleanly after a transient failure.
+  - The client-credentials path is retained only as a best-effort for autonomous (no-context) runs; the expected 82001 noise is suppressed with a single explanatory log line.
+- **Operator runbook** — Any future agentic bot on App Service must follow the same pattern: user-assigned MI + FIC on the bot app reg + `FICClientId` env var. Do **not** rely on system-assigned MI or `MicrosoftAppPassword` for the agentic token bootstrap.
+
 ### Mission Control dashboard (Entra SSO)
 
 - **React SPA** — New [cassidy/dashboard/](cassidy/dashboard/) (React 19 + Vite 6 + TanStack Query) served by the webapp at `/dashboard/`. Pages: Live Operations (uptime, circuit breakers, features, caches), CorpGen Runs (job table), Organisation (registered specialist agents). Right-side blade live-tails the activity ring buffer (5 s polling).

@@ -506,9 +506,13 @@ npx vitest run src/meetings/  # Run specific module
 
 ### Common Issues
 
-**Error 13: AADSTS82001 "MCP app-only token blocked"**
-- Cause: Using app-only credentials instead of delegated user token
-- Fix: Ensure `TurnContext` is passed through tool setup; app-only fallback is for discovery only
+**Error 13: AADSTS82001 "MCP app-only token blocked" / `liveMcp:0` on every turn**
+- Cause: Agentic apps are barred by Entra from `client_credentials`-with-secret. The `@microsoft/agents-hosting` SDK falls back to `MicrosoftAppPassword` only when no FIC is configured, and that fallback is rejected by the platform.
+- Fix: Configure a Federated Identity Credential backed by a **user-assigned** managed identity (system-assigned is not consumed by msal-node's `ManagedIdentityApplication`):
+  1. `az identity create -g <rg> -n <mi-name> -l <region>` — note the `clientId` and `principalId`.
+  2. `az webapp identity assign -g <rg> -n <webapp> --identities <mi-resource-id>`.
+  3. On the bot's Entra app reg, create a federated credential: `issuer=https://login.microsoftonline.com/<tenant>/v2.0`, `subject=<MI principalId>`, `audiences=["api://AzureADTokenExchange"]`.
+  4. Set webapp env var `connections__<connectionName>__settings__FICClientId=<MI clientId>` (e.g. `connections__service_connection__settings__FICClientId`). The SDK then takes the FIC path in `MsalTokenProvider.getAgenticApplicationToken()` and produces valid OBO tokens for MCP discovery.
 
 **TenantIdInvalid on MCP tool loading**
 - Cause: The tooling gateway returns `MCPServerConfig` objects without auth headers; the SDK's `getMcpClientTools()` passes `config.headers` directly to the MCP transport
