@@ -129,6 +129,43 @@ function getOrganizationContext(): {
   };
 }
 
+// ---------------------------------------------------------------------------
+// CorpGen autonomous workday tool
+// ---------------------------------------------------------------------------
+
+const CORPGEN_TOOL_DEFINITIONS: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'cg_run_workday',
+      description:
+        'Run an autonomous CorpGen "digital employee" workday. Generates a hierarchical plan, executes tasks via Cassidy\'s tool surface (MCP, host tools), updates plan state, and produces an end-of-day reflection. Use when the user asks to "run a workday", "do an autonomous run", "execute the day plan", or "demo CorpGen". Interactive caps apply: max 10 cycles, 5 minutes wallclock, 200 tool calls.',
+      parameters: {
+        type: 'object',
+        properties: {
+          maxCycles: {
+            type: 'number',
+            description: 'Cap on execution cycles (1-50). Default 10.',
+          },
+          maxWallclockMs: {
+            type: 'number',
+            description: 'Wall-clock budget in milliseconds. Default 300000 (5 min).',
+          },
+          maxToolCalls: {
+            type: 'number',
+            description: 'Total tool-call budget. Default 200.',
+          },
+          employeeId: {
+            type: 'string',
+            description: 'Override the digital-employee identity (defaults to "cassidy").',
+          },
+        },
+        required: [],
+      },
+    },
+  },
+];
+
 const UTILITY_TOOL_DEFINITIONS: ChatCompletionTool[] = [
   {
     type: 'function',
@@ -199,6 +236,7 @@ export function getAllTools(): ChatCompletionTool[] {
     ...VOICE_TOOL_DEFINITIONS,
     ...INTELLIGENCE_TOOL_DEFINITIONS,
     ...ORCHESTRATOR_TOOL_DEFINITIONS,
+    ...CORPGEN_TOOL_DEFINITIONS,
   ];
 }
 
@@ -557,6 +595,23 @@ export async function executeTool(
       case 'checkAgentHealth':
         result = await healthCheckAllAgents();
         break;
+
+      // ── CorpGen autonomous workday ─────────────────────────────────────
+      case 'cg_run_workday': {
+        const { runWorkdayForCassidy, summariseDayForTeams } = await import('../corpgenIntegration');
+        const day = await runWorkdayForCassidy({
+          context,
+          maxCycles: typeof params.maxCycles === 'number' ? params.maxCycles : undefined,
+          maxWallclockMs: typeof params.maxWallclockMs === 'number' ? params.maxWallclockMs : undefined,
+          maxToolCalls: typeof params.maxToolCalls === 'number' ? params.maxToolCalls : undefined,
+          employeeId: typeof params.employeeId === 'string' ? params.employeeId : undefined,
+        });
+        result = {
+          summary: summariseDayForTeams(day),
+          day,
+        };
+        break;
+      }
 
       default:
         // Attempt to dispatch via live MCP tool (dynamically discovered from Work IQ gateway)

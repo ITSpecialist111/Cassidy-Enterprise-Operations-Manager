@@ -1,7 +1,7 @@
 # Cassidy — Enterprise Operations Manager
 
-![Tests](https://img.shields.io/badge/tests-467%20passed-brightgreen)
-![Suites](https://img.shields.io/badge/suites-38-blue)
+![Tests](https://img.shields.io/badge/tests-513%20passed-brightgreen)
+![Suites](https://img.shields.io/badge/suites-45-blue)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue)
 ![Platform](https://img.shields.io/badge/platform-Microsoft%20Teams-6264A7)
 ![AI](https://img.shields.io/badge/model-GPT--5-orange)
@@ -9,8 +9,14 @@
 ![Version](https://img.shields.io/badge/version-1.7.0-blue)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF)
 ![Observability](https://img.shields.io/badge/telemetry-App%20Insights-68217A)
+![CorpGen](https://img.shields.io/badge/CorpGen-digital%20employee-purple)
 
-A sophisticated autonomous agent for enterprise task coordination, project tracking, approvals, and team workflows. Built on Microsoft Agent Framework with live MCP (Model Context Protocol) integration for Calendar, Mail, Planner, and Teams via the Agent 365 Work IQ platform.
+Cassidy is two things in one process:
+
+1. **A Microsoft Agent Framework Teams bot** — enterprise task coordination, project tracking, approvals, and team workflows, built on the Agent 365 SDK with live MCP (Model Context Protocol) integration for Calendar, Mail, Planner, and Teams via the Work IQ platform.
+2. **An autonomous CorpGen-style digital employee** — a faithful implementation of [**CORPGEN: Simulating Corporate Environments with Autonomous Digital Employees in Multi-Horizon Task Environments**](https://arxiv.org/abs/2602.14229) (Jaye et al., Microsoft Research, arXiv:2602.14229, Feb 2026) layered on top of the bot. The runtime in [cassidy/src/corpgen/](cassidy/src/corpgen/) drives a hierarchical-planner / ReAct / adaptive-summariser / experiential-learning workday loop, with multi-day and multi-employee organisation runs.
+
+The two surfaces share one tool catalogue: the bot can call CorpGen as an LLM tool (`cg_run_workday`) inside a Teams turn, and operators can invoke the same runner over the secret-protected `/api/corpgen/*` HTTP routes. See [docs/CORPGEN.md](docs/CORPGEN.md) for the deep dive and [docs/README.md](docs/README.md) for the docs index.
 
 ## Overview
 
@@ -23,6 +29,7 @@ Cassidy is an AI-powered operations manager that autonomously handles:
 - **Report Generation** — Automated insights and performance summaries
 - **Voice & Call Management** — Integration with call systems and voice processing
 - **Calendar & Scheduling** — Live calendar scanning, event monitoring, and deadline management via MCP CalendarTools
+- **Autonomous workdays (CorpGen)** — Self-directed digital employee that plans, executes, reflects, and learns across days and across an organisation of agents
 
 ## Architecture
 
@@ -42,9 +49,12 @@ cassidy/
 │   ├── proactive/                # Event triggers & proactive workflows
 │   ├── reports/                  # Report generation & distribution
 │   ├── scheduler/                # Scheduled notifications & reminders
-│   ├── tools/                    # MCP tool setup, OBO auth & handlers
+│   ├── tools/                    # MCP tool setup, OBO auth & handlers (incl. cg_run_workday)
 │   ├── voice/                    # Call management & speech processing
-│   └── workQueue/                # Work decomposition & queue management
+│   ├── workQueue/                # Work decomposition & queue management
+│   ├── corpgen/                  # CorpGen digital-employee runtime (paper-faithful)
+│   ├── corpgenIntegration.ts     # Bridge: Cassidy tools ↔ CorpGen ToolExecutor
+│   └── corpgenJobs.ts            # In-memory async job runner for long sweeps
 ├── ToolingManifest.json          # MCP server declarations (Calendar, Mail, Planner, Teams)
 ├── publish/                      # Azure App Service deployment package
 ├── azure-function-trigger/       # Logic App trigger for scheduled tasks
@@ -161,6 +171,9 @@ flowchart TB
 | **Rate Limiter** | Per-user sliding-window rate limiting | `rateLimiter.ts` |
 | **Structured Logger** | JSON-formatted logging with module tagging | `logger.ts` |
 | **LRU Cache** | Generic LRU cache with TTL for user insights and memory | `lruCache.ts` |
+| **CorpGen runtime** | Autonomous digital-employee workday loop — hierarchical planner, tiered memory, adaptive summarisation, experiential learning, multi-day + organisation runners, LLM-as-judge | `corpgen/` |
+| **CorpGen bridge** | Wires CorpGen to Cassidy's tool surface; exposes `runWorkdayForCassidy`, `runMultiDayForCassidy`, `runOrganizationForCassidy` to the LLM tool and HTTP harness | `corpgenIntegration.ts` |
+| **CorpGen async jobs** | In-memory job runner (1 h TTL, 200-job cap) for long benchmark sweeps that exceed the App Service ~230 s response cap | `corpgenJobs.ts` |
 
 ## Features
 
@@ -201,6 +214,17 @@ flowchart TB
 - Call management (inbound/outbound)
 - Real-time speech processing
 - Voice-based task creation and queries
+
+### 🧭 Autonomous Digital Employee (CorpGen)
+- Hierarchical planner — strategic (monthly) → tactical (daily) → operational (per-cycle), DAG-aware
+- Tiered memory — working / structured LTM / semantic, with cycle-start retrieval
+- Adaptive summarisation at the 4 k-token threshold, retaining critical turns
+- Experiential learning — capture successful trajectories and re-rank by cosine similarity
+- ReAct loop with retry-and-skip (3 × 30 iterations) to keep the day moving
+- Comm-channel fallback (Mail ↔ Teams) and graceful Table-Storage degradation
+- Multi-day continuity (`runMultiDay`) and multi-employee organisation runs (`runOrganization`)
+- LLM-as-judge for per-task and per-day artefact grading
+- Reachable from Teams via `cg_run_workday`, or from operators via `/api/corpgen/*` (see below)
 
 ## Getting Started
 
@@ -372,8 +396,24 @@ Conversation and long-term memory use Azure Table Storage via managed identity (
 - `POST /api/scheduled` — Trigger daily standup or other scheduled operations
   - Header: `Authorization: Bearer <SCHEDULED_SECRET>`
 
-### Health
-- `GET /health` — Agent health/readiness status
+### Health & analytics
+- `GET /api/health` — Agent health/readiness status (version, uptime, feature flags, circuit-breaker states)
+- `GET /api/analytics` — Conversation metrics (response times, top tools/users, rate-limited / degraded counts)
+- `GET /api/conversations/export` — Conversation export with PII redaction
+
+### CorpGen autonomous runs (operator-only)
+
+All routes require header `x-scheduled-secret: <SCHEDULED_SECRET>` and are registered before the JWT middleware. Long sweeps should use `async: true` to avoid the App Service ~230 s response cap.
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/corpgen/run` | `POST` | Single workday (sync). Body: `maxCycles`, `maxWallclockMs`, `maxToolCalls`, `employeeId` |
+| `/api/corpgen/multi-day` | `POST` | N consecutive days (sync; `async:true` → 202 + `jobId`). Body adds `days` (1–30) |
+| `/api/corpgen/organization` | `POST` | Multi-employee × multi-day (sync or async). Body adds `members[]` (1–10), `concurrent` |
+| `/api/corpgen/jobs` | `GET` | List recent async jobs |
+| `/api/corpgen/jobs/:id` | `GET` | Poll a specific async job |
+
+Deep dive: [docs/CORPGEN.md](docs/CORPGEN.md). Smoke scripts under [skill-assets/](skill-assets/): [smoke-corpgen-http.ps1](skill-assets/smoke-corpgen-http.ps1), [smoke-corpgen-multi-day.ps1](skill-assets/smoke-corpgen-multi-day.ps1), [smoke-corpgen-organization.ps1](skill-assets/smoke-corpgen-organization.ps1), [smoke-corpgen-async.ps1](skill-assets/smoke-corpgen-async.ps1).
 
 ## Usage Examples
 
@@ -413,14 +453,14 @@ Call Cassidy's voice endpoint to:
 ```bash
 npm run build          # Compile TypeScript
 npm run dev           # Watch mode (if supported)
-npm test              # Run tests (38 suites, 467 tests)
+npm test              # Run tests (45 suites, 513 tests)
 npm run lint          # Code quality checks (ESLint, zero warnings)
 npm run test:coverage # Run tests with V8 coverage report
 ```
 
 ### Testing
 
-The test suite covers all production modules (38 suites, 467 tests):
+The test suite covers all production modules (45 suites, 513 tests). For CorpGen-specific procedures see [TESTING_CORPGEN.md](TESTING_CORPGEN.md) (local + post-deploy regression matrix) and [TESTING_CORPGEN_LIVE.md](TESTING_CORPGEN_LIVE.md) (live operator handoff).
 
 ```bash
 npx vitest run        # Run full suite
@@ -539,12 +579,15 @@ For a complete walkthrough of all features with step-by-step test scenarios, exp
 
 ## Support & Documentation
 
-- **Changelog**: [CHANGELOG.md](CHANGELOG.md) - Full deployment history (23 deploys)
-- **Testing Guide**: [TESTING.md](TESTING.md) - Complete test suite with expected outcomes
-- **Test Results**: [TEST_RESULTS.md](TEST_RESULTS.md) - Latest live test results and deploy status
-- **Deployment Issues**: See [SKILL.md](SKILL.md) for detailed troubleshooting
-- **API Reference**: [agent.yaml](cassidy/agent.yaml) defines all environment variables
-- **Architecture Deep Dive**: [SKILL.md](SKILL.md) includes error codes and design patterns
+- **Docs index**: [docs/README.md](docs/README.md) — links every Cassidy doc together
+- **CorpGen deep dive**: [docs/CORPGEN.md](docs/CORPGEN.md) — paper-concept mapping, lifecycle, HTTP & LLM-tool surfaces, faithful-vs-extension status
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md) — full release history
+- **Testing — bot scenarios**: [TESTING.md](TESTING.md) — end-user / Teams walkthroughs
+- **Testing — CorpGen regression**: [TESTING_CORPGEN.md](TESTING_CORPGEN.md) — local + post-deploy procedure
+- **Testing — CorpGen live**: [TESTING_CORPGEN_LIVE.md](TESTING_CORPGEN_LIVE.md) — operator handoff against the running webapp
+- **Test Results**: [TEST_RESULTS.md](TEST_RESULTS.md) — latest live test results and deploy status
+- **Deployment skill**: [SKILL.md](SKILL.md) — Agent 365 end-to-end deployment with error catalogue
+- **API reference**: [cassidy/agent.yaml](cassidy/agent.yaml) — defines all environment variables
 
 ## License
 
@@ -587,6 +630,6 @@ This project is provided as-is. Modify and use according to your organization's 
 
 ---
 
-**Last Updated**: March 26, 2026  
+**Last Updated**: April 20, 2026  
 **Version**: 1.7.0  
-**Status**: Production — 72+ live MCP tools (6 servers), 38 test suites / 467 tests, input sanitization, tool caching, analytics, correlation IDs, rate limiting, structured logging, retry/circuit breakers, Adaptive Cards, CI pipeline, App Insights
+**Status**: Production — Microsoft Agent Framework Teams bot + autonomous CorpGen digital employee. 72+ live MCP tools (6 servers), 45 test suites / 513 tests, input sanitisation, tool caching, analytics, correlation IDs, rate limiting, structured logging, retry/circuit breakers, Adaptive Cards, CI pipeline, App Insights, CorpGen LLM tool + `/api/corpgen/*` operator harness with async job runner.

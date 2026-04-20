@@ -64,6 +64,11 @@ export async function upsertEntity(tableName: string, entity: TableEntity): Prom
       console.warn(`[TableStorage] upsertEntity(${tableName}) authorization failed; skipping persistence`);
       return;
     }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('TableNotFound')) {
+      console.warn(`[TableStorage] upsertEntity(${tableName}) skipped — table does not exist and could not be created`);
+      return;
+    }
     throw err;
   }
 }
@@ -80,7 +85,7 @@ export async function getEntity<T extends TableEntity>(
     return entity as T;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('ResourceNotFound') || msg.includes('404')) return null;
+    if (msg.includes('ResourceNotFound') || msg.includes('TableNotFound') || msg.includes('404')) return null;
     if (isAuthorizationFailure(err)) {
       console.warn(`[TableStorage] getEntity(${tableName}) authorization failed; returning null`);
       return null;
@@ -109,6 +114,11 @@ export async function listEntities<T extends TableEntity>(
       console.warn(`[TableStorage] listEntities(${tableName}) authorization failed; returning empty result set`);
       return [];
     }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('TableNotFound')) {
+      console.warn(`[TableStorage] listEntities(${tableName}) returning empty — table does not exist`);
+      return [];
+    }
     throw err;
   }
 }
@@ -119,7 +129,7 @@ export async function deleteEntity(tableName: string, partitionKey: string, rowK
     await client.deleteEntity(partitionKey, rowKey);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes('ResourceNotFound') && !msg.includes('404')) {
+    if (!msg.includes('ResourceNotFound') && !msg.includes('TableNotFound') && !msg.includes('404')) {
       console.error(`[TableStorage] deleteEntity(${tableName}, ${partitionKey}, ${rowKey}) failed:`, msg);
     }
   }

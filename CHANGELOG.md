@@ -2,6 +2,31 @@
 
 All notable changes to the Cassidy Enterprise Operations Manager are documented here.
 
+## [unreleased] — 2026-04-20
+
+### CorpGen wiring, async jobs, deploy hardening
+
+- **CorpGen ↔ Cassidy bridge** — New [cassidy/src/corpgenIntegration.ts](cassidy/src/corpgenIntegration.ts) exposes `buildCassidyExecutor`, `runWorkdayForCassidy`, `runMultiDayForCassidy`, `runOrganizationForCassidy`, plus `summariseDayForTeams` / `summariseMultiDay` / `summariseOrganization`. Defaults: `maxCycles=10`, `maxWallclockMs=5 min`, `maxToolCalls=200`, `ignoreSchedule=true`, `withCommFallback=true`. Live MCP tool definitions (delegated/OBO from a Teams turn) are merged with static tools and deduped by name.
+- **LLM tool `cg_run_workday`** — Added to `CORPGEN_TOOL_DEFINITIONS` in [cassidy/src/tools/index.ts](cassidy/src/tools/index.ts) and registered in `getAllTools()`. Optional params: `maxCycles`, `maxWallclockMs`, `maxToolCalls`, `employeeId`. The dispatcher uses a dynamic import of the bridge to break a circular dependency.
+- **Operator HTTP harness** — Four new routes in [cassidy/src/index.ts](cassidy/src/index.ts), all secret-protected via `verifySecret(SCHEDULED_SECRET)` (header `x-scheduled-secret`, 22-char secret) and registered **before** the JWT middleware:
+  - `POST /api/corpgen/run` — single workday (sync)
+  - `POST /api/corpgen/multi-day` — N consecutive days (sync; `async:true` → 202 + `jobId`)
+  - `POST /api/corpgen/organization` — multi-employee × multi-day (sync or async)
+  - `GET /api/corpgen/jobs` and `GET /api/corpgen/jobs/:id` — list / poll async jobs
+- **Async job runner** — New [cassidy/src/corpgenJobs.ts](cassidy/src/corpgenJobs.ts): in-memory `Map`-backed runner with 1 h TTL, 200-job cap, GC, and a `summariseJob` view used by the HTTP status endpoints. Required because App Service Linux frontends cap HTTP responses at ~230 s.
+- **Table Storage tolerance** — Hardened [cassidy/src/memory/tableStorage.ts](cassidy/src/memory/tableStorage.ts) to treat `TableNotFound` identically to `ResourceNotFound`/`404` in `upsertEntity`, `getEntity`, `listEntities`, and `deleteEntity`. When the runtime managed identity lacks Table-create permission, `ensureTable()` swallows the auth failure and downstream CRUD now degrades to `null`/`[]`/no-op rather than crashing CorpGen identity loads.
+- **Storage RBAC** — Granted `Storage Table Data Contributor` on `cassidyschedsa` to the webapp's system-assigned managed identity (principalId `b67995a8-a408-413e-973e-0e23d227ba50`); existing assignment verified.
+- **Deploy script fix** — [skill-assets/stage-deploy.ps1](skill-assets/stage-deploy.ps1) now runs `npm run build` locally and **includes `cassidy/dist/`** in the deploy zip. `az webapp deploy --type zip` uses OneDeploy, which does not run Oryx build (deploy logs show `Build completed succesfully. Time: 0(s)`). Without this fix the running container kept stale `dist/` from previous deploys and new HTTP routes silently 401'd via the JWT middleware.
+- **Smoke scripts** — Added under [skill-assets/](skill-assets/):
+  - [smoke-corpgen-multi-day.ps1](skill-assets/smoke-corpgen-multi-day.ps1) — sync multi-day
+  - [smoke-corpgen-organization.ps1](skill-assets/smoke-corpgen-organization.ps1) — sync 3-employee org
+  - [smoke-corpgen-async.ps1](skill-assets/smoke-corpgen-async.ps1) — async enqueue + poll for either kind
+  - [smoke-corpgen-http.ps1](skill-assets/smoke-corpgen-http.ps1) (existing) — single workday
+  All resolve `SCHEDULED_SECRET` automatically via `az webapp config appsettings list`.
+- **New tests** — [cassidy/src/corpgenIntegration.test.ts](cassidy/src/corpgenIntegration.test.ts) (6) and [cassidy/src/corpgenJobs.test.ts](cassidy/src/corpgenJobs.test.ts) (6). **Test count: 507 → 513 across 44 → 45 suites — all green.**
+- **New docs** — [docs/CORPGEN.md](docs/CORPGEN.md) deep-dive, [docs/README.md](docs/README.md) docs index, [TESTING_CORPGEN_LIVE.md](TESTING_CORPGEN_LIVE.md) operator handoff. README and TESTING_CORPGEN refreshed.
+- **Live verification (2026-04-20)** — `/api/health` 200, version `1.7.0`. Background loops live: ProactiveEngine (300 s), AutonomousLoop (120 s), webhook auto-renewal, MI token pre-warm. Registered digital employees in production: Cassidy (Operations Manager), Morgan (Finance Agent), HR Agent. Single workday → 200 with valid `DayRunResult`; multi-day async → succeeded after 596 s; organisation sync → 3 members ran concurrently.
+
 ## [1.7.0] — 2026-03-26
 
 ### Deploy #23 — Input Sanitization, Tool Caching, Analytics, Webhooks, Conversation Export, Correlation IDs

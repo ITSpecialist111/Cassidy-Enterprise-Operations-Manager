@@ -264,6 +264,186 @@ server.get('/api/webhooks', (req: express.Request, res: Response) => {
   res.status(200).json({ count: subs.length, subscriptions: subs, timestamp: new Date().toISOString() });
 });
 
+// CorpGen autonomous workday — operator-only HTTP harness (secret-protected)
+server.post('/api/corpgen/run', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.body?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  try {
+    const { runWorkdayForCassidy } = await import('./corpgenIntegration');
+    const result = await runWorkdayForCassidy({
+      employeeId: typeof req.body?.employeeId === 'string' ? req.body.employeeId : undefined,
+      maxCycles: typeof req.body?.maxCycles === 'number' ? req.body.maxCycles : 5,
+      maxWallclockMs: typeof req.body?.maxWallclockMs === 'number' ? req.body.maxWallclockMs : 5 * 60_000,
+      maxToolCalls: typeof req.body?.maxToolCalls === 'number' ? req.body.maxToolCalls : 100,
+    });
+    res.status(200).json({ ok: true, result, timestamp: new Date().toISOString() });
+  } catch (err: unknown) {
+    logger.error('CorpGen run failed', { module: 'corpgen', error: String(err) });
+    res.status(500).json({ ok: false, error: String(err), timestamp: new Date().toISOString() });
+  }
+});
+
+// CorpGen multi-day benchmark (operator-only). Synchronous by default; pass
+// `async=true` to enqueue and return a job id (poll /api/corpgen/jobs/:id).
+server.post('/api/corpgen/multi-day', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.body?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const days = typeof req.body?.days === 'number' ? req.body.days : 3;
+  if (days < 1 || days > 30) {
+    res.status(400).json({ error: 'days must be 1..30' });
+    return;
+  }
+  const isAsync = req.body?.async === true;
+  const buildOpts = (): {
+    employeeId?: string; days: number; maxCycles: number; maxWallclockMs: number;
+    maxToolCalls: number; dayStepMs?: number; delayBetweenDaysMs: number; startNow?: string;
+  } => ({
+    employeeId: typeof req.body?.employeeId === 'string' ? req.body.employeeId : undefined,
+    days,
+    maxCycles: typeof req.body?.maxCycles === 'number' ? req.body.maxCycles : 3,
+    maxWallclockMs:
+      typeof req.body?.maxWallclockMs === 'number' ? req.body.maxWallclockMs : 3 * 60_000,
+    maxToolCalls: typeof req.body?.maxToolCalls === 'number' ? req.body.maxToolCalls : 60,
+    dayStepMs: typeof req.body?.dayStepMs === 'number' ? req.body.dayStepMs : undefined,
+    delayBetweenDaysMs:
+      typeof req.body?.delayBetweenDaysMs === 'number' ? req.body.delayBetweenDaysMs : 0,
+    startNow: typeof req.body?.startNow === 'string' ? req.body.startNow : undefined,
+  });
+
+  if (isAsync) {
+    const { startJob } = await import('./corpgenJobs');
+    const opts = buildOpts();
+    const job = startJob('multi-day', opts as unknown as Record<string, unknown>, async (onProgress) => {
+      const { runMultiDayForCassidy } = await import('./corpgenIntegration');
+      onProgress({ current: 0, total: opts.days, note: 'starting' });
+      const results = await runMultiDayForCassidy(opts);
+      onProgress({ current: results.length, total: opts.days, note: 'done' });
+      return results;
+    });
+    res.status(202).json({ ok: true, jobId: job.id, status: job.status, statusUrl: `/api/corpgen/jobs/${job.id}` });
+    return;
+  }
+
+  try {
+    const { runMultiDayForCassidy, summariseMultiDay } = await import('./corpgenIntegration');
+    const results = await runMultiDayForCassidy(buildOpts());
+    const avgCompletion =
+      results.length > 0
+        ? results.reduce((s, r) => s + r.completionRate, 0) / results.length
+        : 0;
+    res.status(200).json({
+      ok: true,
+      days: results.length,
+      avgCompletionRate: avgCompletion,
+      totalToolCalls: results.reduce((s, r) => s + r.toolCallsUsed, 0),
+      results,
+      summary: summariseMultiDay(results),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: unknown) {
+    logger.error('CorpGen multi-day failed', { module: 'corpgen', error: String(err) });
+    res.status(500).json({ ok: false, error: String(err), timestamp: new Date().toISOString() });
+  }
+});
+
+// CorpGen organization benchmark — multi-employee, multi-day (operator-only).
+// Pass `async=true` to enqueue and poll via /api/corpgen/jobs/:id.
+server.post('/api/corpgen/organization', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.body?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const days = typeof req.body?.days === 'number' ? req.body.days : 1;
+  const members = Array.isArray(req.body?.members) ? req.body.members : null;
+  if (!members || members.length === 0) {
+    res.status(400).json({ error: 'members array required' });
+    return;
+  }
+  if (members.length > 10 || days < 1 || days > 30) {
+    res.status(400).json({ error: 'members must be 1..10, days must be 1..30' });
+    return;
+  }
+  const isAsync = req.body?.async === true;
+  const buildOpts = (): {
+    members: unknown[]; days: number; concurrent: boolean; maxCycles: number;
+    maxWallclockMs: number; maxToolCalls: number; dayStepMs?: number; startNow?: string;
+  } => ({
+    members,
+    days,
+    concurrent: req.body?.concurrent !== false,
+    maxCycles: typeof req.body?.maxCycles === 'number' ? req.body.maxCycles : 2,
+    maxWallclockMs:
+      typeof req.body?.maxWallclockMs === 'number' ? req.body.maxWallclockMs : 2 * 60_000,
+    maxToolCalls: typeof req.body?.maxToolCalls === 'number' ? req.body.maxToolCalls : 40,
+    dayStepMs: typeof req.body?.dayStepMs === 'number' ? req.body.dayStepMs : undefined,
+    startNow: typeof req.body?.startNow === 'string' ? req.body.startNow : undefined,
+  });
+
+  if (isAsync) {
+    const { startJob } = await import('./corpgenJobs');
+    const opts = buildOpts();
+    const job = startJob('organization', opts as unknown as Record<string, unknown>, async (onProgress) => {
+      const { runOrganizationForCassidy } = await import('./corpgenIntegration');
+      onProgress({ current: 0, total: opts.members.length, note: 'starting' });
+      const results = await runOrganizationForCassidy(opts as Parameters<typeof runOrganizationForCassidy>[0]);
+      onProgress({ current: results.length, total: opts.members.length, note: 'done' });
+      return results;
+    });
+    res.status(202).json({ ok: true, jobId: job.id, status: job.status, statusUrl: `/api/corpgen/jobs/${job.id}` });
+    return;
+  }
+
+  try {
+    const { runOrganizationForCassidy, summariseOrganization } = await import(
+      './corpgenIntegration'
+    );
+    const results = await runOrganizationForCassidy(buildOpts() as Parameters<typeof runOrganizationForCassidy>[0]);
+    res.status(200).json({
+      ok: true,
+      members: results.length,
+      results,
+      summary: summariseOrganization(results),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: unknown) {
+    logger.error('CorpGen organization failed', { module: 'corpgen', error: String(err) });
+    res.status(500).json({ ok: false, error: String(err), timestamp: new Date().toISOString() });
+  }
+});
+
+// CorpGen async job status (operator-only)
+server.get('/api/corpgen/jobs/:id', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const { getJob, summariseJob } = await import('./corpgenJobs');
+  const job = getJob(req.params.id);
+  if (!job) {
+    res.status(404).json({ error: 'job not found' });
+    return;
+  }
+  res.status(200).json(summariseJob(job));
+});
+
+server.get('/api/corpgen/jobs', async (req: express.Request, res: Response) => {
+  const secret = req.headers['x-scheduled-secret'] || req.query?.secret;
+  if (!verifySecret(secret)) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  const { listJobs, summariseJob } = await import('./corpgenJobs');
+  res.status(200).json({ jobs: listJobs().map(summariseJob) });
+});
+
 // Apply JWT auth middleware for all routes below this point
 server.use(authorizeJWT(authConfig));
 
