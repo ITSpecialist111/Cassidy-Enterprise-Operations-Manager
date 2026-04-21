@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, lazy, Suspense } from 'react';
+
+const NeuralCore = lazy(() => import('./NeuralCore').then(m => ({ default: m.NeuralCore })));
 
 interface Snapshot {
   agent: string;
@@ -300,10 +302,10 @@ function AgentMind() {
   );
 }
 
-type Page = 'live' | 'mind' | 'runs' | 'kanban' | 'org';
+type Page = 'live' | 'mind' | 'neural' | 'runs' | 'kanban' | 'org';
 
 export function App() {
-  const [page, setPage] = useState<Page>('live');
+  const [page, setPage] = useState<Page>('neural');
   const { data: snap, error } = useQuery({
     queryKey: ['snapshot'],
     queryFn: () => fetchJson<Snapshot>('/api/dashboard/snapshot'),
@@ -320,13 +322,24 @@ export function App() {
       <Header snap={snap} />
       <div className="body">
         <nav className="nav">
+          <button className={page === 'neural' ? 'active' : ''} onClick={() => setPage('neural')}>🔮 Neural Core</button>
           <button className={page === 'live' ? 'active' : ''} onClick={() => setPage('live')}>Live Operations</button>
           <button className={page === 'mind' ? 'active' : ''} onClick={() => setPage('mind')}>🧠 Agent Mind</button>
           <button className={page === 'kanban' ? 'active' : ''} onClick={() => setPage('kanban')}>📋 Today's Plan</button>
           <button className={page === 'runs' ? 'active' : ''} onClick={() => setPage('runs')}>CorpGen Runs</button>
           <button className={page === 'org' ? 'active' : ''} onClick={() => setPage('org')}>Organisation</button>
         </nav>
-        <main className="main">
+        <main className={`main${page === 'neural' ? ' neural-page' : ''}`}>
+          {page === 'neural' && (
+            <>
+              <h2>🔮 Neural Core <span style={{ color: 'var(--muted)', fontSize: 13, fontWeight: 400 }}>— Cassidy's cognitive graph</span></h2>
+              <div className="neural-canvas-wrap">
+                <Suspense fallback={<div className="empty" style={{ padding: 40, textAlign: 'center' }}>Loading Neural Core…</div>}>
+                  <NeuralCore />
+                </Suspense>
+              </div>
+            </>
+          )}
           {page === 'live' && <LiveOps snap={snap} />}
           {page === 'mind' && <AgentMind />}
           {page === 'kanban' && <KanbanBoard />}

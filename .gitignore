@@ -14,6 +14,7 @@ yarn.lock
 
 # Build outputs
 dist/
+!cassidy/dashboard/dist/
 build/
 *.tsbuildinfo
 

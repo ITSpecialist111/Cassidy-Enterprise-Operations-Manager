@@ -115,3 +115,64 @@ a:hover { text-decoration: underline; }
   font-weight: 600; border: none; cursor: pointer; font-size: 14px;
 }
 .btn-primary:hover { opacity: 0.9; }
+
+/* ---- Neural Core (3D Mindmap) ---- */
+.neural-page { height: calc(100vh - 60px); display: flex; flex-direction: column; }
+.neural-page h2 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
+.neural-canvas-wrap { flex: 1; position: relative; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); background: #000003; }
+
+.neural-kpi-bar {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 24px; z-index: 10;
+  background: rgba(11,13,18,0.82); backdrop-filter: blur(8px);
+  border: 1px solid var(--border); border-radius: 10px; padding: 8px 20px;
+}
+.neural-kpi { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.neural-kpi-val { font-size: 18px; font-weight: 700; font-family: var(--fontMono); }
+.neural-kpi-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+
+.neural-controls {
+  position: absolute; top: 12px; right: 12px; z-index: 10;
+  display: flex; gap: 8px; align-items: center;
+  background: rgba(11,13,18,0.82); backdrop-filter: blur(8px);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px;
+}
+.neural-btn {
+  background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+  padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;
+}
+.neural-btn:hover { background: var(--accent); color: #0b0d12; }
+
+.neural-slider-wrap { display: flex; align-items: center; gap: 6px; }
+.neural-slider {
+  -webkit-appearance: none; width: 80px; height: 4px;
+  background: var(--border); border-radius: 2px; outline: none;
+}
+.neural-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 12px; height: 12px;
+  background: var(--accent); border-radius: 50%; cursor: pointer;
+}
+
+.neural-legend {
+  position: absolute; bottom: 12px; left: 12px; z-index: 10;
+  display: flex; flex-wrap: wrap; gap: 8px;
+  background: rgba(11,13,18,0.82); backdrop-filter: blur(8px);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+}
+.neural-legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); }
+.neural-legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+
+.neural-detail-panel {
+  position: absolute; bottom: 12px; right: 12px; z-index: 10;
+  width: 280px; max-height: 300px; overflow-y: auto;
+  background: rgba(11,13,18,0.92); backdrop-filter: blur(12px);
+  border: 1px solid var(--border); border-radius: 10px; padding: 14px;
+}
+.neural-detail-header { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.neural-detail-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.neural-detail-close { margin-left: auto; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; }
+.neural-detail-close:hover { color: var(--text); }
+.neural-detail-type { font-size: 11px; color: var(--muted); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.04em; }
+.neural-detail-body { font-size: 12px; color: var(--text); margin-top: 8px; line-height: 1.5; }
+.neural-detail-ts { font-size: 10px; color: var(--muted); margin-top: 6px; font-family: var(--fontMono); }
+.neural-detail-status { font-size: 11px; margin-top: 4px; color: var(--accent); }

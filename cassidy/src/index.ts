@@ -577,6 +577,157 @@ dashApi.get('/kanban', async (req, res: Response) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Mindmap — 3D Neural Core graph (agent cognition visualization)
+// ---------------------------------------------------------------------------
+dashApi.get('/mindmap', async (_req, res: Response) => {
+  try {
+    const events = getRecentEvents({ limit: 500 });
+    const stats  = getEventStats();
+
+    // Build graph from live event data + registered agents + plan
+    const nodes: Array<{
+      id: string; label: string; type: string; group: string;
+      importance: number; detail?: string; ts?: string; status?: string;
+    }> = [];
+    const links: Array<{
+      source: string; target: string; type: string;
+      strength: number; label?: string;
+    }> = [];
+    const seen = new Set<string>();
+
+    const addNode = (n: typeof nodes[0]) => {
+      if (seen.has(n.id)) return;
+      seen.add(n.id);
+      nodes.push(n);
+    };
+
+    // 1. Central Cassidy core node
+    addNode({ id: 'cassidy-core', label: 'Cassidy', type: 'core', group: 'core', importance: 10, detail: 'Autonomous AI Digital Employee — Neural Core' });
+
+    // 2. Cognitive process hubs (always present)
+    const hubs = [
+      { id: 'hub-memory',    label: 'Memory',     type: 'memory',     group: 'memory',    importance: 8, detail: 'Long-term + semantic + working memory' },
+      { id: 'hub-reasoning', label: 'Reasoning',   type: 'thought',    group: 'thought',   importance: 8, detail: 'ReAct thought chain — observation/action/reflection' },
+      { id: 'hub-tools',     label: 'Tool Belt',   type: 'tool',       group: 'tool',      importance: 8, detail: 'MCP + native tool registry' },
+      { id: 'hub-agents',    label: 'Agent Mesh',  type: 'agent',      group: 'agent',     importance: 7, detail: 'Multi-agent orchestrator (A2A protocol)' },
+      { id: 'hub-tasks',     label: "Today's Plan", type: 'task',      group: 'task',      importance: 8, detail: 'CorpGen daily operational plan' },
+      { id: 'hub-users',     label: 'Users',       type: 'user',       group: 'user',      importance: 7, detail: 'User interactions and profiles' },
+    ];
+    for (const h of hubs) {
+      addNode(h);
+      links.push({ source: 'cassidy-core', target: h.id, type: 'core', strength: 0.9 });
+    }
+
+    // 3. Registered agents
+    let agentCount = 0;
+    try {
+      const agentList = await listAgents();
+      for (const a of agentList) {
+        const aid = `agent-${a.rowKey}`;
+        addNode({ id: aid, label: String(a.displayName), type: 'agent', group: 'agent', importance: 5, detail: a.description || undefined });
+        links.push({ source: 'hub-agents', target: aid, type: 'agent_link', strength: 0.5, label: 'registered' });
+        agentCount++;
+      }
+    } catch { /* ok — agents table may not exist */ }
+
+    // 4. Recent events → thought nodes, tool nodes, memory nodes
+    const toolSet = new Set<string>();
+    const thoughtCount = { n: 0 };
+    const memoryNodes: string[] = [];
+
+    for (const ev of events.slice(0, 200)) {
+      if (ev.kind === 'llm.thought') {
+        const tid = `thought-${ev.id}`;
+        thoughtCount.n++;
+        if (thoughtCount.n <= 30) {
+          addNode({ id: tid, label: ev.label.slice(0, 60), type: 'thought', group: 'thought', importance: 4, detail: ev.data?.text as string, ts: ev.ts });
+          links.push({ source: 'hub-reasoning', target: tid, type: 'thought_chain', strength: 0.4 });
+        }
+      } else if (ev.kind === 'tool.call' || ev.kind === 'corpgen.tool') {
+        const toolName = (ev.data?.tool as string) || ev.label.split('▸').pop()?.trim() || ev.label;
+        if (!toolSet.has(toolName)) {
+          toolSet.add(toolName);
+          const toolId = `tool-${toolName}`;
+          addNode({ id: toolId, label: toolName, type: 'tool', group: 'tool', importance: 5, detail: `Used ${stats.byKind[ev.kind] || 1}x`, ts: ev.ts, status: ev.status });
+          links.push({ source: 'hub-tools', target: toolId, type: 'tool_use', strength: 0.5 });
+        }
+      } else if (ev.kind === 'agent.message') {
+        const uid = `user-${ev.correlationId || ev.id}`;
+        if (!seen.has(uid)) {
+          addNode({ id: uid, label: ev.label.slice(0, 40), type: 'user', group: 'user', importance: 4, ts: ev.ts, detail: 'User interaction' });
+          links.push({ source: 'hub-users', target: uid, type: 'memory_recall', strength: 0.4 });
+          memoryNodes.push(uid);
+        }
+      } else if (ev.kind === 'corpgen.cycle') {
+        const cid = `cycle-${ev.id}`;
+        addNode({ id: cid, label: `Cycle ${ev.label.slice(0, 30)}`, type: 'reflection', group: 'thought', importance: 5, ts: ev.ts, status: ev.status, detail: 'CorpGen plan-act-reflect cycle' });
+        links.push({ source: 'hub-reasoning', target: cid, type: 'thought_chain', strength: 0.6 });
+      }
+    }
+
+    // 5. Today's plan tasks
+    let taskCount = 0;
+    try {
+      const { defaultCassidyIdentity, loadDailyPlan } = await import('./corpgen');
+      const identity = defaultCassidyIdentity();
+      const date = new Date().toISOString().slice(0, 10);
+      const plan = await loadDailyPlan(identity.employeeId, date);
+      if (plan) {
+        for (const t of plan.tasks) {
+          const nid = `task-${t.taskId}`;
+          addNode({ id: nid, label: t.description.slice(0, 50), type: 'task', group: 'task', importance: 7 - (t.priority || 3), status: t.status, detail: `${t.app} — P${t.priority}` });
+          links.push({ source: 'hub-tasks', target: nid, type: 'task_dep', strength: 0.6, label: t.status });
+
+          // DAG dependency edges
+          for (const dep of t.dependsOn) {
+            const depId = `task-${dep}`;
+            if (seen.has(depId)) {
+              links.push({ source: depId, target: nid, type: 'task_dep', strength: 0.4, label: 'depends on' });
+            }
+          }
+          taskCount++;
+        }
+      }
+    } catch { /* ok — no plan today */ }
+
+    // 6. Cross-links: tools used by thoughts (via correlation)
+    const corrGroups = new Map<string, string[]>();
+    for (const ev of events.slice(0, 200)) {
+      if (ev.correlationId) {
+        const arr = corrGroups.get(ev.correlationId) || [];
+        arr.push(`${ev.kind === 'tool.call' || ev.kind === 'corpgen.tool' ? 'tool' : ev.kind === 'llm.thought' ? 'thought' : 'other'}-${ev.id}`);
+        corrGroups.set(ev.correlationId, arr);
+      }
+    }
+    // Link thoughts to tools in the same correlation group
+    for (const group of corrGroups.values()) {
+      const thoughts = group.filter(id => id.startsWith('thought-') && seen.has(id));
+      const tools = group.filter(id => id.startsWith('tool-') && seen.has(id));
+      for (const t of thoughts.slice(0, 3)) {
+        for (const tl of tools.slice(0, 3)) {
+          links.push({ source: t, target: tl, type: 'thought_chain', strength: 0.25 });
+        }
+      }
+    }
+
+    res.status(200).json({
+      nodes,
+      links,
+      stats: {
+        totalMemories: memoryNodes.length + (stats.byKind['agent.message'] || 0),
+        activeThoughts: thoughtCount.n,
+        toolsUsed: toolSet.size,
+        agentsOnline: agentCount,
+        tasksToday: taskCount,
+      },
+    });
+  } catch (err) {
+    logger.error('Mindmap build failed', { module: 'dashboard.mindmap', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 server.use('/api/dashboard', dashApi);
 
 // Static dashboard assets at /dashboard (SPA — fall back to index.html for client routes).
