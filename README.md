@@ -191,7 +191,7 @@ flowchart TB
 - Meeting transcription analysis with action item extraction
 - Conversation analytics — avg/p95 response times, top tools/users, rate-limited/degraded counts
 - Real-time ops dashboard via `/api/analytics` endpoint
-- **Mission Control SPA** at `/dashboard/` (Entra SSO via App Service Easy Auth) — live ops, CorpGen runs, org agents, activity tail. See [cassidy/dashboard/](cassidy/dashboard/) and the dashboard section in [CHANGELOG.md](CHANGELOG.md)
+- **Mission Control SPA** at `/dashboard/` (Entra SSO via App Service Easy Auth) — live ops, CorpGen runs, org agents, activity tail. Includes the **Agent Mind** view: an Obsidian-style 2D knowledge graph (powered by [`force-graph`](https://github.com/vasturiano/force-graph) on canvas) that visualises Cassidy's live cognition — central core + cognitive hubs (Memory, Reasoning, Tool Belt, Agent Mesh, Today's Plan, Users), per-invocation tool nodes, individual thoughts chained by correlation, long-term memory atoms grouped by `#tag`, and an outer "starfield" ring of orphan thoughts. Hover highlights neighbours; click recentres and opens detail. Backend builder lives at `dashApi.get('/mindmap')` in [cassidy/src/index.ts](cassidy/src/index.ts). See [cassidy/dashboard/](cassidy/dashboard/) and the dashboard section in [CHANGELOG.md](CHANGELOG.md).
 
 ### 🔒 Security & Compliance
 - Input sanitization — prompt injection guard (5 pattern categories + control char stripping)

@@ -4,6 +4,40 @@ All notable changes to the Cassidy Enterprise Operations Manager are documented 
 
 ## [unreleased] — 2026-04-21
 
+### Agent Mind — Obsidian-style 2D knowledge-graph rebuild
+
+Replaces the previous 3D + bloom NeuralCore with a calm, flat, Obsidian / Karpathy-LLM-Wiki-inspired 2D canvas graph. Goal: a granular, brain-like visualisation where you can see *which* thoughts, tools, memories, and tasks are firing — and which are floating free.
+
+#### Frontend — `cassidy/dashboard/src/NeuralCore.tsx` (rewritten)
+
+- **2D canvas via [`force-graph`](https://github.com/vasturiano/force-graph)** (same author as `3d-force-graph`, no Three.js / WebGL). Bundle dropped from **1352 kB → 185 kB** (~7×).
+- **Tokyo Night palette** — dark `#1a1b26` background; per-type colours: core `#7aa2f7`, memory `#9ece6a`, thought `#bb9af7`, tool `#7dcfff`, agent/objective `#e0af68`, task `#f7768e`, user `#c0caf5`.
+- **Degree-sized nodes** — `r = 2 + √(degree) · 1.3` for connected nodes (Obsidian convention). Hubs render bold permanent labels; other labels appear on hover or when zoom ≥ 1.6.
+- **Neighbour highlight on hover** — non-neighbours dim to ~22 % alpha; touching links thicken and emit directional particles.
+- **Outer "starfield" orphan ring** — nodes that only touch a hub (or nothing) are pre-positioned on a ring of radius `~600 + √n · 14`, rendered smaller (1.4 px) and dimmer (55 % alpha, no stroke). Evokes the "cluster of stars / single-cell organisms" requested look — free-floating thoughts visibly separated from the dense connected core.
+- **Tightened forces** for the brain-tissue aesthetic: `charge.strength(-55)` with `distanceMax(280)`; intra-cluster link distance `22`, hub-spoke distance `50`, link strength `0.6`; longer cooldown (180 ticks, alpha decay `0.012`) so the simulation settles into proper organic structure.
+- Click a node → centre at it and zoom to 2.2; background click → clear selection. Type counts shown in the legend; **Fit** button rescales to viewport.
+- Removed deps: `3d-force-graph`, `three`, `@types/three`, and the Vite `resolve.dedupe: ['three']` config.
+
+#### Backend — `dashApi.get('/mindmap')` in `cassidy/src/index.ts` (granular rewrite)
+
+- **Per-invocation tool nodes** — each `tool.call` / `corpgen.tool` event becomes its own node (capped at 25 per tool family) tethered to a tool-family hub. Old code deduped to one node per tool name; now you can see individual usage as it happens.
+- **Up to 200 individual thoughts** (was 30). Only the 60 most recent connect to the Reasoning hub — the rest are detected as orphans by the frontend and drift to the starfield ring.
+- **Long-term memories from Azure Table Storage** — sample of facts / decisions / preferences pulled from `CassidyMemories` partitioned by category, each as its own node.
+- **`#tag`-cluster nodes** — every memory tag gets a synthetic node that links to all memories sharing it → natural topical clusters.
+- **User → memory provenance edges** — memories link to the user (`user-profile-{sourceUserId}`) who created them.
+- **Stream-of-consciousness chains** — consecutive thoughts in the same correlation group are linked pairwise; thoughts cross-link to all tool-call nodes in the same group → tight, cell-like clumps per task.
+- Stats now use `toolUseCount.size` (number of distinct tool families) instead of the removed `toolSet`.
+
+#### Verification
+
+- `npm run build` — clean, dashboard bundle 185 kB.
+- `npx tsc --noEmit` (cassidy backend) — clean.
+- `npx vitest run` — 513/513 tests pass across 45 suites (no test impact: pure visualisation change).
+- Live: deployed and a CorpGen `cycle` job (`/api/corpgen/run`, `phase=cycle`, `force=true`) ran successfully in production, populating the mindmap with thoughts, tool calls, memories, and reflection cycles. Mission Control `/dashboard/` Agent Mind view confirmed working.
+
+## [previously unreleased] — 2026-04-21
+
 ### Agentic harness + FAISS vector index + per-task tool filtering
 
 Closes the last three gaps between the Cassidy implementation and the CorpGen paper (Jaye et al., arXiv:2602.14229). Inspired by the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) pattern of declarative agent definitions with isolated execution.
