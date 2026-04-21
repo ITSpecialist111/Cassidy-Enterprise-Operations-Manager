@@ -215,7 +215,7 @@ export function NeuralCore({ onNodeClick }: Props) {
     // mismatch, etc.) fall back to constructing our own EffectComposer that
     // wraps the graph's renderer/scene/camera and runs each frame via
     // onEngineTick.
-    const installBloom = (verbose = false): boolean => {
+    const installBloom = (): boolean => {
       const bloomPass = new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
         bloomStrength,
@@ -224,29 +224,21 @@ export function NeuralCore({ onNodeClick }: Props) {
       );
       bloomPassRef.current = bloomPass;
 
-      // Path 1: built-in composer
+      // Path 1: built-in composer from three-render-objects.
       try {
         const ppc = (graph as unknown as { postProcessingComposer?: unknown }).postProcessingComposer;
         const builtIn = typeof ppc === 'function'
           ? (ppc as () => unknown).call(graph)
           : null;
-        if (verbose) {
-          console.info('[NeuralCore] built-in composer probe', {
-            hasFn: typeof ppc === 'function',
-            builtIn,
-            addPass: builtIn && typeof (builtIn as { addPass?: unknown }).addPass,
-          });
-        }
         if (builtIn && typeof (builtIn as { addPass?: unknown }).addPass === 'function') {
           (builtIn as EffectComposer).addPass(bloomPass);
-          console.info('[NeuralCore] bloom installed via built-in composer');
           return true;
         }
-      } catch (err) {
-        console.warn('[NeuralCore] built-in composer threw, falling back', err);
+      } catch {
+        // fall through to manual composer
       }
 
-      // Path 2: manual composer
+      // Path 2: manual EffectComposer wired to graph.renderer/scene/camera.
       try {
         const rendererFn = (graph as unknown as { renderer?: unknown }).renderer;
         const sceneFn = (graph as unknown as { scene?: unknown }).scene;
@@ -254,9 +246,6 @@ export function NeuralCore({ onNodeClick }: Props) {
         const renderer = typeof rendererFn === 'function' ? (rendererFn as () => unknown).call(graph) : null;
         const scene = typeof sceneFn === 'function' ? (sceneFn as () => unknown).call(graph) : null;
         const camera = typeof cameraFn === 'function' ? (cameraFn as () => unknown).call(graph) : null;
-        if (verbose) {
-          console.info('[NeuralCore] manual composer probe', { renderer, scene, camera });
-        }
         if (!renderer || !scene || !camera) return false;
         const composer = new EffectComposer(renderer as THREE.WebGLRenderer);
         composer.setSize(window.innerWidth, window.innerHeight);
@@ -269,10 +258,8 @@ export function NeuralCore({ onNodeClick }: Props) {
           rafIdRef.current = requestAnimationFrame(renderLoop);
         };
         rafIdRef.current = requestAnimationFrame(renderLoop);
-        console.info('[NeuralCore] bloom installed via manual composer');
         return true;
-      } catch (err) {
-        console.warn('[NeuralCore] manual composer setup failed', err);
+      } catch {
         return false;
       }
     };
@@ -280,34 +267,20 @@ export function NeuralCore({ onNodeClick }: Props) {
     // Expose for ad-hoc debugging in the browser console.
     (window as unknown as { __cassidyGraph?: unknown }).__cassidyGraph = graph;
 
-    // Synchronous probe right after graph creation
-    try {
-      const r0 = (graph as unknown as { renderer?: () => unknown }).renderer?.();
-      const ppc0 = (graph as unknown as { postProcessingComposer?: () => unknown }).postProcessingComposer?.();
-      const canvases = containerRef.current?.querySelectorAll('canvas');
-      console.info('[NeuralCore] sync probe', {
-        renderer: r0 ? (r0 as { constructor: { name: string } }).constructor.name : r0,
-        ppc: ppc0 ? (ppc0 as { constructor: { name: string } }).constructor.name : ppc0,
-        canvasCount: canvases?.length,
-        containerHTML: containerRef.current?.innerHTML?.slice(0, 200),
-      });
-    } catch (e) {
-      console.warn('[NeuralCore] sync probe threw', e);
-    }
-
-    // Poll for up to ~5s waiting for the renderer/composer to come online,
-    // then install bloom. Some 3d-force-graph builds defer their inner
-    // kapsule init by one or more frames.
+    // Poll requestAnimationFrame for up to 5s waiting for the inner
+    // three-render-objects kapsule to expose its renderer/composer, then
+    // install bloom. With `new ForceGraph3D(...)` the composer is normally
+    // ready on the first frame.
     let attempts = 0;
-    const MAX_ATTEMPTS = 300; // ~5s at 60fps
+    const MAX_ATTEMPTS = 300;
     const tryInstall = () => {
       if (manualComposerDisposed.current) return;
       attempts++;
-      if (installBloom(attempts === 1 || attempts === 60 || attempts === MAX_ATTEMPTS)) return;
+      if (installBloom()) return;
       if (attempts < MAX_ATTEMPTS) {
         rafIdRef.current = requestAnimationFrame(tryInstall);
       } else {
-        console.warn('[NeuralCore] no composer path succeeded after', attempts, 'frames; rendering without bloom');
+        console.warn('[NeuralCore] no composer path succeeded; rendering without bloom');
       }
     };
     rafIdRef.current = requestAnimationFrame(tryInstall);
