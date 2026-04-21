@@ -18,6 +18,22 @@ Cassidy is two things in one process:
 
 The two surfaces share one tool catalogue: the bot can call CorpGen as an LLM tool (`cg_run_workday`) inside a Teams turn, and operators can invoke the same runner over the secret-protected `/api/corpgen/*` HTTP routes. See [docs/CORPGEN.md](docs/CORPGEN.md) for the deep dive and [docs/README.md](docs/README.md) for the docs index.
 
+## Screenshots
+
+### Mission Control — Agent Mind (Obsidian-style 2D knowledge graph)
+
+Live cognition view: cognitive hubs at the centre, per-invocation tool nodes, individual thoughts chained by correlation, long-term memory atoms grouped by `#tag`, and an outer starfield ring of orphan thoughts. Hover highlights neighbours; click recentres and opens detail.
+
+![Agent Mind — granular brain visualisation](cassidy/Screenshots/AgentmindGranual.png)
+
+![Neural Core visualisation](cassidy/Screenshots/NeuralCoreVisualisation.png)
+
+### Microsoft Teams — Cassidy in conversation
+
+Cassidy answering inside a Microsoft Teams chat with live MCP tool calls (Calendar, Mail, Planner, Teams) under the hood.
+
+![Cassidy interacting in Microsoft Teams](cassidy/Screenshots/MSTeams_CassidyInteraction.png)
+
 ## Overview
 
 Cassidy is an AI-powered operations manager that autonomously handles:
@@ -227,6 +243,58 @@ flowchart TB
 - Multi-day continuity (`runMultiDay`) and multi-employee organisation runs (`runOrganization`)
 - LLM-as-judge for per-task and per-day artefact grading
 - Reachable from Teams via `cg_run_workday`, or from operators via `/api/corpgen/*` (see below)
+
+## How the Agentic Harness Works
+
+The **agent harness** ([cassidy/src/corpgen/agentHarness.ts](cassidy/src/corpgen/agentHarness.ts)) is the single execution engine that powers every reasoning loop in the CorpGen stack — the main ReAct workday loop, the Research sub-agent, and the Computer-Use planner. It replaces three previously-bespoke LLM loops with one declarative, configurable runner inspired by the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) pattern.
+
+### Mental model
+
+An **agent** is a plain object (`AgentDefinition`), not a class. The harness takes that definition plus a tool catalogue and runs it to completion inside an isolated message context, returning a structured `HarnessOutcome` (success / error / budget-exhausted, final result, iteration count, tool calls used).
+
+```ts
+const outcome = await runAgent({
+  agent: CORPGEN_REACT_AGENT,        // declarative AgentDefinition
+  tools: allAvailableTools,          // ChatCompletionTool[] — MCP + cognitive + sub-agent
+  appHint: currentTask.app,          // 'Mail' | 'Calendar' | 'Planner' | …
+  userMessages: [{ role: 'user', content: taskBrief }],
+  dispatchTool: routeThreeTier,      // cognitive → subagent → host MCP
+  budget,                            // shared HarnessBudget (wallclock + tool-call caps)
+  hooks: { onToolCall, onToolResult, onIteration },
+});
+```
+
+### What the harness does on every iteration
+
+1. **Budget check** — fail fast with `budgetExhausted: true` if the day's wallclock or tool-call cap is hit.
+2. **Build the system prompt** — either a static string or a `(promptCtx) => string` builder that can inject task / employee / memory context.
+3. **Assemble the tool list** (`assembleToolList`) — the per-task tool filter:
+   - Apply the agent's `toolAllowlist` if present.
+   - **Cognitive** tools (`recall`, `remember`, `reflect`, `summariseHistory`…) and **sub-agent** tools (`research`, `computer_use`…) are always promoted to the front.
+   - **MCP tools** matching the current task's app are next (e.g. an Email task gets every `mcp_MailTools_*` tool first; `APP_TO_MCP_PREFIX` covers Mail / Calendar / Teams / Planner / SharePoint / OneDrive).
+   - **Static wrapper** tools mapped to the app (`sendEmail`, `scheduleCalendarEvent`, `createPlannerTask`…).
+   - Remaining tools fill the slots up to the **128-tool OpenAI cap** (`MAX_TOOLS = 128`).
+4. **LLM call** — sends the message array with the filtered tools, optional `tool_choice`, and optional `response_format: json_object` (per-iteration via `responseFormatFn`, e.g. only the *last* iteration of the research agent is forced to JSON).
+5. **Record the assistant turn** in the structured `ReActTurn[]` log used for adaptive summarisation and trajectory capture.
+6. **No tool calls?** Terminal — return the final answer. *Exception:* if the agent has `toolChoice='none'` plus a `continuationPrompt`, inject the continuation as a `user` message and keep iterating (this is how the Research sub-agent does multi-pass reading without tool calls).
+7. **Tool calls present?** For each call:
+   - Fire `hooks.onToolCall(name, args)` (telemetry, dashboard event).
+   - Delegate to the caller's `dispatchTool(name, args)` — the harness owns *no* dispatch logic, preserving the three-tier routing in `digitalEmployee.ts` (cognitive → sub-agent → host MCP via Agent 365 OBO token).
+   - Increment `budget.toolCallsUsed`.
+   - Fire `hooks.onToolResult(name, result, error, durationMs)`.
+   - Append the result as a `tool` message and a structured `observation` turn.
+8. **Adaptive summarisation** — between iterations, `compressIfNeeded()` collapses old turns once the token estimate drifts past the threshold, keeping the most recent + the explicitly-marked `critical: true` turns.
+9. **Loop** until the agent returns a terminal answer or `maxIterations` is reached.
+
+### Why this matters
+
+- **One engine, many agents** — adding a new agent (e.g. a triage sub-agent) is a five-line `AgentDefinition` literal. No new loops to maintain.
+- **Context isolation** — each `runAgent()` call has its own message array, so a sub-agent's exploration never pollutes the parent's history.
+- **Per-task tool filtering (CorpGen Gap #3)** — instead of dumping all 100+ tools at the LLM every turn, the harness shows the model the most relevant slice for the *current* task's app. Reduces hallucinated tool calls and cuts prompt cost.
+- **Budget threading** — a single `HarnessBudget` object passes through every `runAgent` call in the day, so wallclock and tool-call caps are enforced globally, not per-loop.
+- **Lifecycle hooks for observability** — the **Agent Mind** dashboard view consumes events emitted by these hooks: every `onToolCall` becomes a tool node, every assistant turn becomes a thought node, and every correlation group renders as a tight cluster.
+
+The harness file is ~280 lines, fully typed, and replaces ~400 lines of duplicated loop code that previously lived across `digitalEmployee.ts` and `subAgents.ts`.
 
 ## Getting Started
 
