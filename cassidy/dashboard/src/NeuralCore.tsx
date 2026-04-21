@@ -204,27 +204,36 @@ export function NeuralCore({ onNodeClick }: Props) {
     graph.d3Force('charge')?.strength(-120);
     graph.d3Force('link')?.distance((l: any) => 40 + (1 - (l.strength || 0.5)) * 60);
 
-    // Add bloom post-processing (best-effort — composer may be unavailable in some
-    // 3d-force-graph builds; the visualisation still renders without bloom).
-    try {
-      const bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(window.innerWidth, window.innerHeight),
-        2.5, // strength
-        1,   // radius
-        0,   // threshold
-      );
-      bloomPassRef.current = bloomPass;
-      const composer = typeof graph.postProcessingComposer === 'function'
-        ? graph.postProcessingComposer()
-        : null;
-      if (composer && typeof composer.addPass === 'function') {
-        composer.addPass(bloomPass);
-      } else {
-        console.warn('[NeuralCore] post-processing composer unavailable; rendering without bloom');
+    // Add bloom post-processing — defer until after first animation frame so
+    // three-render-objects has lazily created the EffectComposer. The bloom
+    // pass is added inside requestAnimationFrame to give the renderer one
+    // tick to set up its WebGL targets and composer chain.
+    const tryAddBloom = (attempt = 0): void => {
+      try {
+        const composer = typeof graph.postProcessingComposer === 'function'
+          ? graph.postProcessingComposer()
+          : null;
+        if (composer && typeof composer.addPass === 'function') {
+          const bloomPass = new UnrealBloomPass(
+            new THREE.Vector2(window.innerWidth, window.innerHeight),
+            bloomStrength, // strength
+            1,             // radius
+            0,             // threshold
+          );
+          bloomPassRef.current = bloomPass;
+          composer.addPass(bloomPass);
+          return;
+        }
+        if (attempt < 5) {
+          requestAnimationFrame(() => tryAddBloom(attempt + 1));
+        } else {
+          console.warn('[NeuralCore] post-processing composer never became available; rendering without bloom');
+        }
+      } catch (err) {
+        console.warn('[NeuralCore] bloom setup failed', err);
       }
-    } catch (err) {
-      console.warn('[NeuralCore] bloom setup failed', err);
-    }
+    };
+    requestAnimationFrame(() => tryAddBloom());
 
     // Auto-orbit when idle
     let angle = 0;

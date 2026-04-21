@@ -82,7 +82,7 @@ When any cap fires the runner stops cleanly with `stopReason ∈ { plan_complete
 In addition:
 
 - **Table Storage tolerance** — [cassidy/src/memory/tableStorage.ts](../cassidy/src/memory/tableStorage.ts) treats `TableNotFound` identically to `ResourceNotFound`/`404` in `upsertEntity`, `getEntity`, `listEntities`, and `deleteEntity`. When the runtime managed identity lacks Table-create permission, `ensureTable()` swallows the auth failure and downstream CRUD degrades to `null`/`[]`/no-op rather than crashing CorpGen identity loads. Any new persistence code should go through these helpers (do not call `TableClient` directly).
-- **Tool-array cap** — Azure OpenAI enforces a 128-tool ceiling per request; the bridge dedupes by name (live MCP wins over static) and the agent caps the merged array.
+- **Tool-array cap** — Azure OpenAI enforces a 128-tool ceiling per request; the harness's `assembleToolList()` sorts by app relevance (cognitive/subagent first, app-matching MCP tools next, others fill the remainder) and caps at 128.
 
 ## HTTP and LLM-tool surfaces
 
@@ -206,6 +206,9 @@ Three operator scripts under [skill-assets/](../skill-assets/) exercise the sche
 | Multi-day / organisation runs | Operationally aligned | `runMultiDay` and `runOrganization` are plumbed end-to-end and exercised by smoke scripts; the **paper-equivalent benchmark sweeps still need empirical runs at scale** to publish completion-rate trends. |
 | LLM-as-judge (`judgeTask` / `judgeDay`) | Extension | Adds artifact-level and day-level grading on top of the paper's framework. |
 | Comm-channel fallback (Mail ↔ Teams) | Extension | Practical safety net for the M365 surface; not in the paper. |
+| Reusable agentic harness | Extension | Inspired by Claude Agent SDK — declarative `AgentDefinition` objects, context isolation per invocation, lifecycle hooks. All three agent types (CorpGen ReAct, Research, CUA planner) execute through `runAgent()`. |
+| Per-task tool filtering | Faithful | `assembleToolList()` sorts tools by relevance to the current task's app (cognitive/subagent first, app-relevant MCP next, others fill remainder). Reduces tool-selection noise per CorpGen Gap #3. |
+| FAISS vector index | Faithful (extended) | `faiss-node` in `optionalDependencies`. One `IndexFlatIP` per app, lazy-loaded with 10-min cache TTL. Graceful fallback to in-memory cosine scan. |
 | Operator HTTP harness + async jobs | Extension | Required by App Service's ~230 s response cap and operator workflows. |
 | Autonomous in-process scheduler + work-hours gating | Extension | Drives `init`/`cycle`/`reflect`/`monthly` phases on a UTC clock so the digital employee runs unattended. Gating returns synthetic `skipped:*` `DayRunResult`s outside Mon–Fri 07–18 UTC. |
 
