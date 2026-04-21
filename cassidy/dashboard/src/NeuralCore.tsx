@@ -140,7 +140,8 @@ export function NeuralCore({ onNodeClick }: Props) {
     if (!containerRef.current) return;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const graph: ForceGraph3DInstance = (ForceGraph3D as any)(containerRef.current)
+    const Ctor = ForceGraph3D as unknown as new (el: HTMLElement) => ForceGraph3DInstance;
+    const graph: ForceGraph3DInstance = new Ctor(containerRef.current)
       .backgroundColor('#000003')
       .showNavInfo(false)
       .nodeLabel((n: any) => `<div style="background:#11151cee;color:#e6edf3;padding:8px 12px;border-radius:6px;border:1px solid #232a36;font-size:12px;max-width:260px">
@@ -283,9 +284,12 @@ export function NeuralCore({ onNodeClick }: Props) {
     try {
       const r0 = (graph as unknown as { renderer?: () => unknown }).renderer?.();
       const ppc0 = (graph as unknown as { postProcessingComposer?: () => unknown }).postProcessingComposer?.();
+      const canvases = containerRef.current?.querySelectorAll('canvas');
       console.info('[NeuralCore] sync probe', {
         renderer: r0 ? (r0 as { constructor: { name: string } }).constructor.name : r0,
         ppc: ppc0 ? (ppc0 as { constructor: { name: string } }).constructor.name : ppc0,
+        canvasCount: canvases?.length,
+        containerHTML: containerRef.current?.innerHTML?.slice(0, 200),
       });
     } catch (e) {
       console.warn('[NeuralCore] sync probe threw', e);
