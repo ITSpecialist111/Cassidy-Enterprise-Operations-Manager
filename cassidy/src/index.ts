@@ -631,31 +631,47 @@ dashApi.get('/mindmap', async (_req, res: Response) => {
       }
     } catch { /* ok — agents table may not exist */ }
 
-    // 4. Recent events → thought nodes, tool nodes, memory nodes
-    const toolSet = new Set<string>();
+    // 4. Recent events → granular nodes (every thought, every tool call, every message)
+    // Goal: dense, brain-like cloud — hundreds of nodes, naturally clustered by correlation.
+    const toolUseCount = new Map<string, number>();
     const thoughtCount = { n: 0 };
     const memoryNodes: string[] = [];
+    const toolInstanceIds: string[] = [];
 
-    for (const ev of events.slice(0, 200)) {
+    for (const ev of events.slice(0, 500)) {
       if (ev.kind === 'llm.thought') {
         const tid = `thought-${ev.id}`;
         thoughtCount.n++;
-        if (thoughtCount.n <= 30) {
-          addNode({ id: tid, label: ev.label.slice(0, 60), type: 'thought', group: 'thought', importance: 4, detail: ev.data?.text as string, ts: ev.ts });
-          links.push({ source: 'hub-reasoning', target: tid, type: 'thought_chain', strength: 0.4 });
+        if (thoughtCount.n <= 200) {
+          const text = (ev.data?.text as string) || ev.label;
+          addNode({ id: tid, label: ev.label.slice(0, 48), type: 'thought', group: 'thought', importance: 3, detail: text, ts: ev.ts });
+          // Only link the most important / recent thoughts to the hub.
+          // Older thoughts stay disconnected → render as the outer "starfield".
+          if (thoughtCount.n <= 60) {
+            links.push({ source: 'hub-reasoning', target: tid, type: 'thought_chain', strength: 0.35 });
+          }
         }
       } else if (ev.kind === 'tool.call' || ev.kind === 'corpgen.tool') {
         const toolName = (ev.data?.tool as string) || ev.label.split('▸').pop()?.trim() || ev.label;
-        if (!toolSet.has(toolName)) {
-          toolSet.add(toolName);
-          const toolId = `tool-${toolName}`;
-          addNode({ id: toolId, label: toolName, type: 'tool', group: 'tool', importance: 5, detail: `Used ${stats.byKind[ev.kind] || 1}x`, ts: ev.ts, status: ev.status });
-          links.push({ source: 'hub-tools', target: toolId, type: 'tool_use', strength: 0.5 });
+        const useCount = (toolUseCount.get(toolName) || 0) + 1;
+        toolUseCount.set(toolName, useCount);
+        // Tool family hub (one per tool name)
+        const toolHubId = `tool-${toolName}`;
+        if (!seen.has(toolHubId)) {
+          addNode({ id: toolHubId, label: toolName, type: 'tool', group: 'tool', importance: 5, detail: `Tool: ${toolName}`, ts: ev.ts, status: ev.status });
+          links.push({ source: 'hub-tools', target: toolHubId, type: 'tool_use', strength: 0.5 });
+        }
+        // Individual invocation node (granular)
+        if (useCount <= 25) {
+          const callId = `toolcall-${ev.id}`;
+          addNode({ id: callId, label: `${toolName} #${useCount}`, type: 'tool', group: 'tool', importance: 2, detail: ev.label, ts: ev.ts, status: ev.status });
+          links.push({ source: toolHubId, target: callId, type: 'tool_use', strength: 0.6 });
+          toolInstanceIds.push(callId);
         }
       } else if (ev.kind === 'agent.message') {
         const uid = `user-${ev.correlationId || ev.id}`;
         if (!seen.has(uid)) {
-          addNode({ id: uid, label: ev.label.slice(0, 40), type: 'user', group: 'user', importance: 4, ts: ev.ts, detail: 'User interaction' });
+          addNode({ id: uid, label: ev.label.slice(0, 40), type: 'user', group: 'user', importance: 3, ts: ev.ts, detail: 'User interaction' });
           links.push({ source: 'hub-users', target: uid, type: 'memory_recall', strength: 0.4 });
           memoryNodes.push(uid);
         }
@@ -665,6 +681,44 @@ dashApi.get('/mindmap', async (_req, res: Response) => {
         links.push({ source: 'hub-reasoning', target: cid, type: 'thought_chain', strength: 0.6 });
       }
     }
+
+    // 4b. Long-term memories — pull a sample for the visualisation
+    try {
+      const { listEntities } = await import('./memory/tableStorage');
+      const partitions = ['fact', 'decision', 'preference'];
+      let memCount = 0;
+      for (const p of partitions) {
+        const entries = await listEntities<{ partitionKey: string; rowKey: string; content?: string; tags?: string; sourceUserId?: string }>('CassidyMemories', p);
+        for (const m of entries.slice(0, 40)) {
+          const mid = `mem-${p}-${m.rowKey}`;
+          const label = (m.content || m.rowKey).slice(0, 50);
+          addNode({ id: mid, label, type: 'memory', group: 'memory', importance: 3, detail: m.content });
+          links.push({ source: 'hub-memory', target: mid, type: 'memory_recall', strength: 0.35 });
+          memoryNodes.push(mid);
+          memCount++;
+          // Link memory to the user who created it
+          if (m.sourceUserId) {
+            const uid = `user-profile-${m.sourceUserId}`;
+            if (!seen.has(uid)) {
+              addNode({ id: uid, label: m.sourceUserId.slice(0, 24), type: 'user', group: 'user', importance: 4 });
+              links.push({ source: 'hub-users', target: uid, type: 'memory_recall', strength: 0.4 });
+            }
+            links.push({ source: uid, target: mid, type: 'memory_recall', strength: 0.3 });
+          }
+          // Tag-based cross-links → memory clusters
+          if (m.tags) {
+            for (const tag of m.tags.split(',').map(t => t.trim()).filter(Boolean).slice(0, 3)) {
+              const tid = `tag-${tag}`;
+              if (!seen.has(tid)) {
+                addNode({ id: tid, label: `#${tag}`, type: 'thought', group: 'memory', importance: 2, detail: `Memory cluster: ${tag}` });
+              }
+              links.push({ source: tid, target: mid, type: 'memory_recall', strength: 0.25 });
+            }
+          }
+        }
+        if (memCount > 100) break;
+      }
+    } catch { /* ok — memory table may not exist yet */ }
 
     // 5. Today's plan tasks
     let taskCount = 0;
@@ -693,21 +747,30 @@ dashApi.get('/mindmap', async (_req, res: Response) => {
 
     // 6. Cross-links: tools used by thoughts (via correlation)
     const corrGroups = new Map<string, string[]>();
-    for (const ev of events.slice(0, 200)) {
+    for (const ev of events.slice(0, 500)) {
       if (ev.correlationId) {
         const arr = corrGroups.get(ev.correlationId) || [];
-        arr.push(`${ev.kind === 'tool.call' || ev.kind === 'corpgen.tool' ? 'tool' : ev.kind === 'llm.thought' ? 'thought' : 'other'}-${ev.id}`);
+        const prefix = (ev.kind === 'tool.call' || ev.kind === 'corpgen.tool')
+          ? 'toolcall'
+          : ev.kind === 'llm.thought'
+            ? 'thought'
+            : 'other';
+        arr.push(`${prefix}-${ev.id}`);
         corrGroups.set(ev.correlationId, arr);
       }
     }
-    // Link thoughts to tools in the same correlation group
+    // Link thoughts to tool calls in the same correlation group → forms tight clusters
     for (const group of corrGroups.values()) {
       const thoughts = group.filter(id => id.startsWith('thought-') && seen.has(id));
-      const tools = group.filter(id => id.startsWith('tool-') && seen.has(id));
-      for (const t of thoughts.slice(0, 3)) {
-        for (const tl of tools.slice(0, 3)) {
-          links.push({ source: t, target: tl, type: 'thought_chain', strength: 0.25 });
+      const tools = group.filter(id => id.startsWith('toolcall-') && seen.has(id));
+      for (const t of thoughts) {
+        for (const tl of tools) {
+          links.push({ source: t, target: tl, type: 'thought_chain', strength: 0.5 });
         }
+      }
+      // Also chain consecutive thoughts so the agent's "stream of consciousness" is visible
+      for (let i = 0; i < thoughts.length - 1; i++) {
+        links.push({ source: thoughts[i], target: thoughts[i + 1], type: 'thought_chain', strength: 0.4 });
       }
     }
 
@@ -717,7 +780,7 @@ dashApi.get('/mindmap', async (_req, res: Response) => {
       stats: {
         totalMemories: memoryNodes.length + (stats.byKind['agent.message'] || 0),
         activeThoughts: thoughtCount.n,
-        toolsUsed: toolSet.size,
+        toolsUsed: toolUseCount.size,
         agentsOnline: agentCount,
         tasksToday: taskCount,
       },

@@ -82,6 +82,7 @@ export function NeuralCore({ onNodeClick }: Props) {
   const hoverNodeRef = useRef<MindmapNode | null>(null);
   const highlightNodesRef = useRef<Set<string>>(new Set());
   const highlightLinksRef = useRef<Set<MindmapLink>>(new Set());
+  const orphanIdsRef = useRef<Set<string>>(new Set());
   const [selectedNode, setSelectedNode] = useState<MindmapNode | null>(null);
 
   const { data, error } = useQuery({
@@ -106,7 +107,30 @@ export function NeuralCore({ onNodeClick }: Props) {
       if (s) { s.__degree = (s.__degree || 0) + 1; s.__neighbors!.add(tId); }
       if (t) { t.__degree = (t.__degree || 0) + 1; t.__neighbors!.add(sId); }
     });
-    return { nodes: data.nodes, links: data.links };
+
+    // Identify orphans = nodes that only touch a single hub (or nothing).
+    // Render them as a starfield ring around the dense core to evoke
+    // "free-floating thoughts" / single-cell organism cluster.
+    const orphans: MindmapNode[] = [];
+    data.nodes.forEach((n) => {
+      const deg = n.__degree || 0;
+      const onlyHubLink = deg === 1 && [...(n.__neighbors || [])].every((id) => id.startsWith('hub-') || id === 'cassidy-core');
+      if (deg === 0 || (onlyHubLink && (n.type === 'thought' || n.type === 'memory' || n.type === 'tool'))) {
+        // demote weakly-attached small nodes to the orphan ring
+        if ((n.importance || 0) <= 3) orphans.push(n);
+      }
+    });
+    const orphanIds = new Set(orphans.map((o) => o.id));
+
+    // Pre-position orphans on a ring so the simulation keeps them out there.
+    const ringRadius = 600 + Math.sqrt(data.nodes.length) * 14;
+    orphans.forEach((n, i) => {
+      const angle = (i / Math.max(1, orphans.length)) * Math.PI * 2;
+      n.x = Math.cos(angle) * ringRadius;
+      n.y = Math.sin(angle) * ringRadius;
+    });
+
+    return { nodes: data.nodes, links: data.links, orphanIds };
   }, [data]);
 
   useEffect(() => {
@@ -118,12 +142,12 @@ export function NeuralCore({ onNodeClick }: Props) {
 
     graph
       .backgroundColor(BG)
-      .nodeRelSize(4)
+      .nodeRelSize(3)
       .nodeId('id')
       .linkSource('source')
       .linkTarget('target')
       .linkColor(() => EDGE_COLOR)
-      .linkWidth((l: MindmapLink) => (highlightLinksRef.current.has(l) ? 1.4 : 0.6))
+      .linkWidth((l: MindmapLink) => (highlightLinksRef.current.has(l) ? 1.4 : 0.45))
       .linkDirectionalParticles((l: MindmapLink) => (highlightLinksRef.current.has(l) ? 2 : 0))
       .linkDirectionalParticleWidth(2)
       .linkDirectionalParticleColor(() => EDGE_HIGHLIGHT)
@@ -131,47 +155,54 @@ export function NeuralCore({ onNodeClick }: Props) {
         const isHover = hoverNodeRef.current?.id === node.id;
         const isNeighbour = highlightNodesRef.current.has(node.id);
         const dimmed = !!hoverNodeRef.current && !isHover && !isNeighbour;
+        const isOrphan = orphanIdsRef.current.has(node.id);
 
         const degree = node.__degree || 0;
-        const baseR = 3 + Math.sqrt(degree) * 1.6;
-        const r = isHover ? baseR * 1.4 : baseR;
+        const baseR = isOrphan ? 1.4 : 2 + Math.sqrt(degree) * 1.3;
+        const r = isHover ? baseR * 1.5 : baseR;
 
         const color = NODE_COLORS[node.type] || '#9aa5ce';
 
         if (isHover || isNeighbour) {
           ctx.beginPath();
-          ctx.arc(node.x!, node.y!, r * 2.2, 0, 2 * Math.PI);
-          ctx.fillStyle = hexToRgba(color, isHover ? 0.18 : 0.1);
+          ctx.arc(node.x!, node.y!, r * 2.4, 0, 2 * Math.PI);
+          ctx.fillStyle = hexToRgba(color, isHover ? 0.2 : 0.1);
           ctx.fill();
         }
 
         ctx.beginPath();
         ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
-        ctx.fillStyle = dimmed ? hexToRgba(color, 0.25) : color;
+        const baseAlpha = isOrphan ? 0.55 : 1;
+        ctx.fillStyle = dimmed
+          ? hexToRgba(color, 0.22)
+          : (isOrphan ? hexToRgba(color, baseAlpha) : color);
         ctx.fill();
 
-        ctx.lineWidth = 1 / globalScale;
-        ctx.strokeStyle = dimmed ? 'rgba(0,0,0,0.2)' : 'rgba(26,27,38,0.9)';
-        ctx.stroke();
+        if (!isOrphan) {
+          ctx.lineWidth = 1 / globalScale;
+          ctx.strokeStyle = dimmed ? 'rgba(0,0,0,0.2)' : 'rgba(26,27,38,0.9)';
+          ctx.stroke();
+        }
 
-        const showLabel = globalScale >= 1.4 || isHover || isNeighbour;
+        const isHub = node.id.startsWith('hub-') || node.id === 'cassidy-core';
+        const showLabel = isHub || globalScale >= 1.6 || isHover || isNeighbour;
         if (showLabel) {
-          const fontSize = Math.max(2.5, 11 / globalScale);
-          ctx.font = `${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+          const fontSize = Math.max(2.5, (isHub ? 13 : 10) / globalScale);
+          ctx.font = `${isHub ? '600 ' : ''}${fontSize}px ui-sans-serif, system-ui, sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'top';
           ctx.fillStyle = isHover ? LABEL_HIGHLIGHT : LABEL_COLOR;
-          if (dimmed) ctx.fillStyle = 'rgba(169,177,214,0.35)';
+          if (dimmed) ctx.fillStyle = 'rgba(169,177,214,0.3)';
           const label = node.label.length > 32 ? node.label.slice(0, 30) + '\u2026' : node.label;
           ctx.fillText(label, node.x!, node.y! + r + 2);
         }
       })
       .nodePointerAreaPaint((node: MindmapNode, color: string, ctx: CanvasRenderingContext2D) => {
         const degree = node.__degree || 0;
-        const r = (3 + Math.sqrt(degree) * 1.6) * 1.6;
+        const r = (2 + Math.sqrt(degree) * 1.3) * 1.6;
         ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
+        ctx.arc(node.x!, node.y!, Math.max(3, r), 0, 2 * Math.PI);
         ctx.fill();
       })
       .onNodeHover((node: MindmapNode | null) => {
@@ -205,12 +236,19 @@ export function NeuralCore({ onNodeClick }: Props) {
         setSelectedNode(null);
         onNodeClick?.(null);
       })
-      .cooldownTicks(120)
-      .d3AlphaDecay(0.018)
-      .d3VelocityDecay(0.3);
+      .cooldownTicks(180)
+      .d3AlphaDecay(0.012)
+      .d3VelocityDecay(0.32);
 
-    graph.d3Force('charge')?.strength(-90);
-    graph.d3Force('link')?.distance(36);
+    // Tight clustering — short links, gentle repulsion → dense organic blob.
+    graph.d3Force('charge')?.strength(-55).distanceMax(280);
+    graph.d3Force('link')?.distance((l: MindmapLink) => {
+      const sId = typeof l.source === 'string' ? l.source : (l.source as MindmapNode).id;
+      const tId = typeof l.target === 'string' ? l.target : (l.target as MindmapNode).id;
+      // Hub spokes a bit longer; intra-cluster links short for the brain look.
+      return (sId.startsWith('hub-') || tId.startsWith('hub-')) ? 50 : 22;
+    }).strength(0.6);
+    graph.d3Force('center')?.strength(0.04);
 
     graphRef.current = graph;
 
@@ -229,6 +267,7 @@ export function NeuralCore({ onNodeClick }: Props) {
 
   useEffect(() => {
     if (!graphRef.current || !enriched) return;
+    orphanIdsRef.current = enriched.orphanIds;
     graphRef.current.graphData({ nodes: enriched.nodes, links: enriched.links });
   }, [enriched]);
 
