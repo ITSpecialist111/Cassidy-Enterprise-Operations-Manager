@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import ForceGraph3D from '3d-force-graph';
 import type { ForceGraph3DInstance } from '3d-force-graph';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
@@ -123,6 +125,9 @@ export function NeuralCore({ onNodeClick }: Props) {
   const [selectedNode, setSelectedNode] = useState<MindmapNode | null>(null);
   const [bloomStrength, setBloomStrength] = useState(2.5);
   const bloomPassRef = useRef<UnrealBloomPass | null>(null);
+  const manualComposerRef = useRef<EffectComposer | null>(null);
+  const manualComposerDisposed = useRef(false);
+  const rafIdRef = useRef<number | null>(null);
 
   const { data, error } = useQuery({
     queryKey: ['mindmap'],
@@ -204,36 +209,66 @@ export function NeuralCore({ onNodeClick }: Props) {
     graph.d3Force('charge')?.strength(-120);
     graph.d3Force('link')?.distance((l: any) => 40 + (1 - (l.strength || 0.5)) * 60);
 
-    // Add bloom post-processing — defer until after first animation frame so
-    // three-render-objects has lazily created the EffectComposer. The bloom
-    // pass is added inside requestAnimationFrame to give the renderer one
-    // tick to set up its WebGL targets and composer chain.
-    const tryAddBloom = (attempt = 0): void => {
+    // Add bloom post-processing. Try the built-in composer from
+    // three-render-objects first; if it isn't there (older bundle, dual-three
+    // mismatch, etc.) fall back to constructing our own EffectComposer that
+    // wraps the graph's renderer/scene/camera and runs each frame via
+    // onEngineTick.
+    const installBloom = (): boolean => {
+      const bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        bloomStrength,
+        1,
+        0,
+      );
+      bloomPassRef.current = bloomPass;
+
+      // Path 1: built-in composer
       try {
-        const composer = typeof graph.postProcessingComposer === 'function'
+        const builtIn = typeof graph.postProcessingComposer === 'function'
           ? graph.postProcessingComposer()
           : null;
-        if (composer && typeof composer.addPass === 'function') {
-          const bloomPass = new UnrealBloomPass(
-            new THREE.Vector2(window.innerWidth, window.innerHeight),
-            bloomStrength, // strength
-            1,             // radius
-            0,             // threshold
-          );
-          bloomPassRef.current = bloomPass;
-          composer.addPass(bloomPass);
-          return;
-        }
-        if (attempt < 5) {
-          requestAnimationFrame(() => tryAddBloom(attempt + 1));
-        } else {
-          console.warn('[NeuralCore] post-processing composer never became available; rendering without bloom');
+        if (builtIn && typeof (builtIn as { addPass?: unknown }).addPass === 'function') {
+          (builtIn as EffectComposer).addPass(bloomPass);
+          return true;
         }
       } catch (err) {
-        console.warn('[NeuralCore] bloom setup failed', err);
+        console.warn('[NeuralCore] built-in composer threw, falling back', err);
+      }
+
+      // Path 2: manual composer wired into the engine tick loop
+      try {
+        const renderer = graph.renderer();
+        const scene = graph.scene();
+        const camera = graph.camera();
+        if (!renderer || !scene || !camera) return false;
+        const composer = new EffectComposer(renderer);
+        composer.setSize(window.innerWidth, window.innerHeight);
+        composer.addPass(new RenderPass(scene, camera));
+        composer.addPass(bloomPass);
+        manualComposerRef.current = composer;
+        // Skip the default scene render; let the composer drive it.
+        // We still let three-render-objects update controls/raycaster — it will
+        // overwrite the framebuffer, so we render the composer immediately
+        // afterwards on every animation frame.
+        const renderLoop = () => {
+          if (manualComposerDisposed.current) return;
+          composer.render();
+          rafIdRef.current = requestAnimationFrame(renderLoop);
+        };
+        rafIdRef.current = requestAnimationFrame(renderLoop);
+        return true;
+      } catch (err) {
+        console.warn('[NeuralCore] manual composer setup failed', err);
+        return false;
       }
     };
-    requestAnimationFrame(() => tryAddBloom());
+
+    requestAnimationFrame(() => {
+      if (!installBloom()) {
+        console.warn('[NeuralCore] no composer path succeeded; rendering without bloom');
+      }
+    });
 
     // Auto-orbit when idle
     let angle = 0;
@@ -259,6 +294,10 @@ export function NeuralCore({ onNodeClick }: Props) {
     const onResize = () => {
       graph.width(containerRef.current?.clientWidth || window.innerWidth);
       graph.height(containerRef.current?.clientHeight || window.innerHeight);
+      manualComposerRef.current?.setSize(
+        containerRef.current?.clientWidth || window.innerWidth,
+        containerRef.current?.clientHeight || window.innerHeight,
+      );
     };
     window.addEventListener('resize', onResize);
     onResize();
@@ -266,6 +305,10 @@ export function NeuralCore({ onNodeClick }: Props) {
     return () => {
       clearInterval(orbitTimer);
       window.removeEventListener('resize', onResize);
+      manualComposerDisposed.current = true;
+      if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
+      manualComposerRef.current?.dispose?.();
+      manualComposerRef.current = null;
       graph._destructor?.();
     };
   }, []);
