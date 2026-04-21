@@ -2,6 +2,36 @@
 
 All notable changes to the Cassidy Enterprise Operations Manager are documented here.
 
+## [unreleased] — 2026-04-21
+
+### Daily-operator promotion (5-question design pass)
+
+Turns Cassidy from a "fires-when-poked" agent into a CorpGen-style daily operator. Five design answers from MOD Administrator drove the changes:
+
+1. **Manager identity** — Cassidy reports to MOD Administrator, briefed via Teams DM and email.
+2. **Cycle cadence** — once a task completes autonomously, no more than every 20 min (matches existing scheduler).
+3. **Quiet hours / weekends** — weekdays 09:00–17:30 Australia/Sydney are working hours; everything else is silent.
+4. **Real Planner board** — wire a Kanban board into the flight deck.
+5. **Trajectory scope** — index successful trajectories from ALL toolset apps (not just Mail/Teams/Planner).
+
+### Implementation
+
+- **Sydney work-hours gate** — `checkWorkHours` in [cassidy/src/corpgenIntegration.ts](cassidy/src/corpgenIntegration.ts) now uses `Intl.DateTimeFormat` against `Australia/Sydney` (overridable via `CORPGEN_WORK_TZ`, `CORPGEN_WORK_START`, `CORPGEN_WORK_END`). Default window: weekdays 09:00–17:30 local. New helper `getLocalParts(now, tz)` is shared with the scheduler so all timezone reasoning lives in one place.
+- **Sydney-aware scheduler** — [cassidy/src/corpgenScheduler.ts](cassidy/src/corpgenScheduler.ts) `isWindow()` switched from UTC to Sydney local. Phase windows are now: `init` 08:50, `cycle` every 20 min from 09:00 to 17:00, `reflect` 17:20, `monthly` 1st-of-month 08:00 — all weekday Sydney local. `lastFired` keys also include local minute so DST transitions don't double-fire.
+- **Per-employee concurrency semaphore** — `runWorkdayForCassidy` keeps an `_inflight: Map<employeeId, Promise<DayRunResult>>`. A second invocation for the same employee while one is in-flight returns synthetic `DayRunResult` with new `stopReason: 'skipped:in_flight'` (extended in [cassidy/src/corpgen/types.ts](cassidy/src/corpgen/types.ts)). Eliminates the LLM/MCP-lane pile-up that left A2–A5 forced phases stuck `running`.
+- **Manager briefing** — New `briefManager(phase, result)` in [cassidy/src/corpgenIntegration.ts](cassidy/src/corpgenIntegration.ts) runs after `init`/`reflect`/`monthly` (cycle phases stay quiet — too noisy). Resolution order: `CORPGEN_MANAGER_USER_ID` env → `CORPGEN_MANAGER_EMAIL` env → display-name match `MOD Administrator` (overridable via `CORPGEN_MANAGER_NAME`).
+  - Teams DM via new `sendDirectMessage(userId, text)` exported from [cassidy/src/proactive/proactiveEngine.ts](cassidy/src/proactive/proactiveEngine.ts) — uses the cloud adapter's `continueConversation` with the stored `ConversationReference`.
+  - Email best-effort via `sendEmail` MCP. The scheduler runs without `TurnContext` so MailTools returns "MCP unavailable" — logged at warn, not an error. Email delivers when the brief is triggered from a Teams turn (e.g. `cg_run_workday`).
+- **Kanban board on Mission Control** — New `GET /api/dashboard/kanban[?employeeId=&date=]` in [cassidy/src/index.ts](cassidy/src/index.ts) loads today's `DailyPlan` from Table Storage and bucketises tasks into Backlog (`pending`) / In Progress (`in_progress`) / Blocked (`blocked`) / Done (`done`/`skipped`/`failed`). New `KanbanBoard` page in [cassidy/dashboard/src/App.tsx](cassidy/dashboard/src/App.tsx) renders 4 columns with priority pills (P1–P5), retry counters, and last-error badges. Auto-refreshes every 15 s. Easy-Auth-gated like every other dashboard route.
+- **Trajectory scope (already covered)** — `captureSuccessfulTrajectory` in [cassidy/src/corpgen/experientialLearning.ts](cassidy/src/corpgen/experientialLearning.ts) has no per-tool filter; every successful task records its full action sequence regardless of which of the 8 toolset apps drove it. Verified — no code change needed.
+
+### Live verification (2026-04-21)
+
+- **Build + tests**: `npm run build` clean, `npm test` 513/45 green.
+- **Health**: `https://cassidyopsagent-webapp.azurewebsites.net/api/health` returns `healthy` post-deploy.
+- **Semaphore proved live**: `POST /api/corpgen/run {phase:'cycle', force:false}` at 05:20 UTC (≈ 15:20 AEST, in-hours) returned `200` with `stopReason:'skipped:in_flight'` because a prior workday job was still active. The semaphore eliminates the contended pile-up symptom from yesterday's `autonomy-sequential` battery.
+- **Sydney scheduler windows**: All four phase windows now compute against Sydney local time. With the deployed time at 05:20 UTC = 15:20 AEST, the next scheduled fire is the 15:40 AEST `cycle`.
+
 ## [unreleased] — 2026-04-20
 
 ### Autonomous workday phases + in-process scheduler

@@ -127,24 +127,37 @@ Invoke-RestMethod `
 
 ## Autonomous scheduling
 
-Cassidy runs its CorpGen workday **unattended** via the in-process scheduler in [cassidy/src/corpgenScheduler.ts](../cassidy/src/corpgenScheduler.ts). A 60 s tick from `index.ts` checks the wall clock (UTC) against four phase windows and fires `POST /api/corpgen/run` (in-process, not HTTP) with the matching `phase`:
+Cassidy runs its CorpGen workday **unattended** via the in-process scheduler in [cassidy/src/corpgenScheduler.ts](../cassidy/src/corpgenScheduler.ts). A 60 s tick from `index.ts` checks the wall clock (Australia/Sydney, default — overridable via `CORPGEN_WORK_TZ`) against four phase windows and fires `POST /api/corpgen/run` (in-process, not HTTP) with the matching `phase`:
 
-| Phase | Window (UTC, weekdays) | Preset (cycles / wallclock / tool calls) | CorpGen analogue |
+| Phase | Window (Sydney local, weekdays) | Preset (cycles / wallclock / tool calls) | CorpGen analogue |
 |---|---|---|---|
 | `init` | 08:50 | 1 / 90 s / 30 | Day Init (Algorithm 1, lines 1–6) |
-| `cycle` | every 20 min, 09:00 → 16:40 | 1 / 90 s / 50 | Single execution cycle |
-| `reflect` | 16:30 | 1 / 120 s / 50 | Day End reflection + `judgeDay` |
-| `monthly` | 1st of month, 08:00 | 2 / 240 s / 100 | Regenerate monthly plan + 2 priming cycles |
+| `cycle` | every 20 min, 09:00 → 17:00 | 1 / 120 s / 40 | Single execution cycle |
+| `reflect` | 17:20 | 1 / 90 s / 30 | Day End reflection + `judgeDay` |
+| `monthly` | 1st of month, 08:00 | 1 / 60 s / 20 | Regenerate monthly plan |
 
 Toggle with `CORPGEN_SCHEDULER_ENABLED=false`. Started by `startCorpGenScheduler()` and stopped on `SIGTERM`/`SIGINT`.
 
+### Concurrency semaphore
+
+`runWorkdayForCassidy` holds a per-employee `_inflight` map. A second invocation for the same `employeeId` while one is already running returns a synthetic `DayRunResult` in 0 ms with `stopReason: 'skipped:in_flight'`. This prevents the LLM/MCP lane from piling up when phases overlap or when a manual run lands during a scheduled cycle.
+
+### Manager briefing
+
+After `init`, `reflect`, and `monthly` phases (cycles stay quiet), the bridge calls `briefManager(phase, result)` which:
+
+1. Resolves the manager via env (`CORPGEN_MANAGER_USER_ID` → `CORPGEN_MANAGER_EMAIL` → display-name match `MOD Administrator`, overridable via `CORPGEN_MANAGER_NAME`).
+2. Sends a Teams DM via `sendDirectMessage(userId, text)` exported from [cassidy/src/proactive/proactiveEngine.ts](../cassidy/src/proactive/proactiveEngine.ts) (uses the cloud adapter's `continueConversation` with the stored `ConversationReference`).
+3. Best-effort email via the `sendEmail` MailTools MCP — succeeds when the brief is triggered from a Teams turn (OBO available); the scheduler-driven path logs a warn and skips when no `TurnContext` is present.
+
 ### Work-hours / weekday gating
 
-`runWorkdayForCassidy(turn?, opts)` wraps every non-`manual` phase in `checkWorkHours()`. If the current UTC moment is a weekend or outside 07–18, it returns a synthetic `DayRunResult` in 0 ms with one of three new `stopReason` values:
+`runWorkdayForCassidy(turn?, opts)` wraps every non-`manual` phase in `checkWorkHours()`. The check uses `Intl.DateTimeFormat` against the configured timezone and treats Mon–Fri 09:00–17:30 Sydney local as in-hours. Outside that window, non-manual phases return a synthetic `DayRunResult` in 0 ms with one of these `stopReason` values:
 
 - `'skipped:weekend'`
 - `'skipped:before_hours'`
 - `'skipped:after_hours'`
+- `'skipped:in_flight'` (per-employee semaphore — see above)
 
 Manual runs (`phase: 'manual'` or no phase) ignore the gate. To override the gate for a forced phase test, send `force: true` in the body of `/api/corpgen/run`.
 

@@ -549,6 +549,34 @@ dashApi.get('/jobs/:id', async (req, res: Response) => {
   res.status(200).json(summariseJob(job));
 });
 
+// Today's CorpGen DailyPlan for the default employee — feeds the Kanban board.
+dashApi.get('/kanban', async (req, res: Response) => {
+  try {
+    const { defaultCassidyIdentity, loadDailyPlan } = await import('./corpgen');
+    const identity = defaultCassidyIdentity();
+    const employeeId = String(req.query.employeeId || identity.employeeId);
+    const date = String(req.query.date || new Date().toISOString().slice(0, 10));
+    const plan = await loadDailyPlan(employeeId, date);
+    res.status(200).json({
+      ok: true,
+      employeeId,
+      date,
+      plan,
+      columns: plan
+        ? {
+          pending:     plan.tasks.filter((t) => t.status === 'pending'),
+          in_progress: plan.tasks.filter((t) => t.status === 'in_progress'),
+          blocked:     plan.tasks.filter((t) => t.status === 'blocked'),
+          done:        plan.tasks.filter((t) => t.status === 'done' || t.status === 'skipped' || t.status === 'failed'),
+        }
+        : null,
+    });
+  } catch (err) {
+    logger.error('Kanban load failed', { module: 'dashboard.kanban', error: String(err) });
+    res.status(500).json({ ok: false, error: String(err) });
+  }
+});
+
 server.use('/api/dashboard', dashApi);
 
 // Static dashboard assets at /dashboard (SPA — fall back to index.html for client routes).

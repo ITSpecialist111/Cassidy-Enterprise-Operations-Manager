@@ -260,7 +260,8 @@ export type DayStopReason =
   | 'tool_call_cap'
   | 'skipped:weekend'
   | 'skipped:before_hours'
-  | 'skipped:after_hours';
+  | 'skipped:after_hours'
+  | 'skipped:in_flight';
 
 // ---------------------------------------------------------------------------
 // Artifact-based judging (CorpGen §5.3)

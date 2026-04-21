@@ -300,7 +300,7 @@ function AgentMind() {
   );
 }
 
-type Page = 'live' | 'mind' | 'runs' | 'org';
+type Page = 'live' | 'mind' | 'runs' | 'kanban' | 'org';
 
 export function App() {
   const [page, setPage] = useState<Page>('live');
@@ -322,12 +322,14 @@ export function App() {
         <nav className="nav">
           <button className={page === 'live' ? 'active' : ''} onClick={() => setPage('live')}>Live Operations</button>
           <button className={page === 'mind' ? 'active' : ''} onClick={() => setPage('mind')}>🧠 Agent Mind</button>
+          <button className={page === 'kanban' ? 'active' : ''} onClick={() => setPage('kanban')}>📋 Today's Plan</button>
           <button className={page === 'runs' ? 'active' : ''} onClick={() => setPage('runs')}>CorpGen Runs</button>
           <button className={page === 'org' ? 'active' : ''} onClick={() => setPage('org')}>Organisation</button>
         </nav>
         <main className="main">
           {page === 'live' && <LiveOps snap={snap} />}
           {page === 'mind' && <AgentMind />}
+          {page === 'kanban' && <KanbanBoard />}
           {page === 'runs' && <WorkdayRuns />}
           {page === 'org' && <Organisation snap={snap} />}
         </main>
@@ -336,5 +338,81 @@ export function App() {
         </aside>
       </div>
     </div>
+  );
+}
+
+interface KanbanTask {
+  taskId: string;
+  description: string;
+  app: string;
+  priority: number;
+  status: 'pending' | 'in_progress' | 'blocked' | 'done' | 'failed' | 'skipped';
+  dependsOn: string[];
+  attempts: number;
+  lastError?: string;
+}
+interface KanbanResponse {
+  ok: boolean;
+  employeeId: string;
+  date: string;
+  plan: { tasks: KanbanTask[] } | null;
+  columns: {
+    pending: KanbanTask[];
+    in_progress: KanbanTask[];
+    blocked: KanbanTask[];
+    done: KanbanTask[];
+  } | null;
+}
+
+function KanbanBoard() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['kanban'],
+    queryFn: () => fetchJson<KanbanResponse>('/api/dashboard/kanban'),
+    refetchInterval: 15_000,
+  });
+  if (isLoading) return <div className="empty">Loading today's plan…</div>;
+  if (error) return <div className="error">{(error as Error).message}</div>;
+  if (!data?.plan || !data.columns) {
+    return (
+      <>
+        <h2>📋 Today's Plan — {data?.date ?? '…'}</h2>
+        <div className="empty">No daily plan yet. Cassidy generates one at Day Init (08:50 AEST) or on demand via <code>cg_run_workday</code>.</div>
+      </>
+    );
+  }
+  const cols: Array<{ key: keyof typeof data.columns; label: string; tone: string }> = [
+    { key: 'pending',     label: 'Backlog',     tone: 'warn' },
+    { key: 'in_progress', label: 'In Progress', tone: 'good' },
+    { key: 'blocked',     label: 'Blocked',     tone: 'bad' },
+    { key: 'done',        label: 'Done',        tone: 'good' },
+  ];
+  return (
+    <>
+      <h2>📋 Today's Plan — {data.date} <span className="sub">({data.employeeId})</span></h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+        {cols.map((c) => {
+          const tasks = data.columns![c.key];
+          return (
+            <div key={c.key} className="card" style={{ padding: 12 }}>
+              <h3 style={{ marginTop: 0 }}>{c.label} <span className="sub">({tasks.length})</span></h3>
+              {tasks.length === 0 && <div className="empty" style={{ padding: 8 }}>—</div>}
+              {tasks.map((t) => (
+                <div key={t.taskId} className="card" style={{ padding: 8, marginBottom: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <strong style={{ flex: 1 }}>{t.description}</strong>
+                    <span className={`pill ${t.priority <= 2 ? 'bad' : t.priority <= 3 ? 'warn' : 'good'}`}>P{t.priority}</span>
+                  </div>
+                  <div className="sub" style={{ marginTop: 4 }}>
+                    {t.app}{t.attempts > 0 ? ` · ${t.attempts} attempt${t.attempts === 1 ? '' : 's'}` : ''}
+                    {t.status === 'failed' || t.status === 'skipped' ? ` · ${t.status}` : ''}
+                  </div>
+                  {t.lastError && <div className="error" style={{ marginTop: 4, fontSize: 12 }}>{t.lastError}</div>}
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </>
   );
 }

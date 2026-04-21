@@ -122,14 +122,40 @@ export function checkWorkHours(
   identity: DigitalEmployeeIdentity,
   now: Date = new Date(),
 ): { inHours: boolean; reason?: string } {
-  const day = now.getUTCDay(); // 0=Sun, 6=Sat — close enough for gating
-  if (day === 0 || day === 6) return { inHours: false, reason: 'weekend' };
-  // Use UTC hour as a coarse approximation; identity.schedule is local but BST/GMT are within 1h.
-  // For Europe/London: 09:00 local ≈ 08:00 UTC summer, 09:00 UTC winter — accept 07–18 UTC.
-  const h = now.getUTCHours();
-  if (h < Math.max(0, identity.schedule.startHour - 2)) return { inHours: false, reason: 'before_hours' };
-  if (h >= identity.schedule.endHour + 1)               return { inHours: false, reason: 'after_hours' };
+  // MOD Administrator works AEST/AEDT 09:00–17:30 Mon–Fri.
+  // Use the IANA tz so daylight-saving transitions are handled automatically.
+  const tz = process.env.CORPGEN_WORK_TZ || 'Australia/Sydney';
+  const startMin = parseHmm(process.env.CORPGEN_WORK_START || '09:00');
+  const endMin   = parseHmm(process.env.CORPGEN_WORK_END   || '17:30');
+  const p = getLocalParts(now, tz);
+  if (p.weekday === 'Sat' || p.weekday === 'Sun') return { inHours: false, reason: 'weekend' };
+  const minutes = p.h * 60 + p.m;
+  if (minutes < startMin) return { inHours: false, reason: 'before_hours' };
+  if (minutes >= endMin)  return { inHours: false, reason: 'after_hours' };
+  void identity; // schedule.startHour/endHour kept for future per-employee overrides
   return { inHours: true };
+}
+
+/** Extract weekday/hour/minute in a target IANA timezone. */
+export function getLocalParts(now: Date, tz: string): { weekday: string; h: number; m: number; day: number; month: number } {
+  const fmt = new Intl.DateTimeFormat('en-AU', {
+    timeZone: tz, hour12: false,
+    weekday: 'short', hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit',
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(now).map((x) => [x.type, x.value])) as Record<string, string>;
+  return {
+    weekday: parts.weekday,
+    h: Number(parts.hour),
+    m: Number(parts.minute),
+    day: Number(parts.day),
+    month: Number(parts.month),
+  };
+}
+
+function parseHmm(s: string): number {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s);
+  if (!m) return 9 * 60;
+  return Number(m[1]) * 60 + Number(m[2]);
 }
 
 /**
@@ -155,53 +181,167 @@ export async function runWorkdayForCassidy(input: RunWorkdayInput = {}): Promise
       logger.info('CorpGen workday gated by schedule', {
         module: 'corpgen.bridge', phase, reason: gate.reason,
       });
-      const today = new Date().toISOString().slice(0, 10);
-      return {
-        employeeId: identity.employeeId,
-        date: today,
-        cyclesRun: 0,
-        tasksCompleted: 0,
-        tasksSkipped: 0,
-        tasksFailed: 0,
-        toolCallsUsed: 0,
-        completionRate: 0,
-        stopReason: `skipped:${gate.reason}` as DayRunResult['stopReason'],
-        reflection: `Skipped ${phase} run: ${gate.reason}.`,
-        startedAt: new Date().toISOString(),
-        endedAt: new Date().toISOString(),
-      };
+      return skippedResult(identity.employeeId, phase, gate.reason ?? 'unknown');
     }
   }
 
-  let executor = await buildCassidyExecutor(input.context);
-  if (opts.withFallback) executor = withCommFallback(executor, { employeeId: identity.employeeId });
+  // Per-employee concurrency semaphore. The CorpGen contract is that no two
+  // workdays for the same digital employee should overlap; if a phase is
+  // already running, return synthetic skipped result rather than queue up
+  // contended LLM/MCP work.
+  const inflight = _inflight.get(identity.employeeId);
+  if (inflight) {
+    logger.info('CorpGen workday skipped: in-flight run for employee', {
+      module: 'corpgen.bridge', employeeId: identity.employeeId, phase,
+    });
+    return skippedResult(identity.employeeId, phase, 'in_flight');
+  }
 
-  const runOpts: RunOptions = {
-    identity,
-    executor,
-    ignoreSchedule: opts.ignoreSchedule,
-    maxCycles: opts.maxCycles,
-    maxWallclockMs: opts.maxWallclockMs,
-    maxToolCalls: opts.maxToolCalls,
+  const promise = (async (): Promise<DayRunResult> => {
+    let executor = await buildCassidyExecutor(input.context);
+    if (opts.withFallback) executor = withCommFallback(executor, { employeeId: identity.employeeId });
+
+    const runOpts: RunOptions = {
+      identity,
+      executor,
+      ignoreSchedule: opts.ignoreSchedule,
+      maxCycles: opts.maxCycles,
+      maxWallclockMs: opts.maxWallclockMs,
+      maxToolCalls: opts.maxToolCalls,
+    };
+
+    logger.info('CorpGen workday starting', {
+      module: 'corpgen.bridge',
+      employeeId: identity.employeeId,
+      phase,
+      maxCycles: opts.maxCycles,
+      maxToolCalls: opts.maxToolCalls,
+    });
+    const result = await runWorkday(runOpts);
+    logger.info('CorpGen workday finished', {
+      module: 'corpgen.bridge',
+      employeeId: identity.employeeId,
+      cyclesRun: result.cyclesRun,
+      completionRate: result.completionRate,
+      stopReason: result.stopReason,
+      toolCallsUsed: result.toolCallsUsed,
+    });
+
+    // Brief the manager after meaningful phases (not every cycle — too noisy).
+    if (phase === 'init' || phase === 'reflect' || phase === 'monthly') {
+      try { await briefManager(phase, result); }
+      catch (err) {
+        logger.warn('CorpGen manager brief failed', {
+          module: 'corpgen.bridge', phase, error: String(err),
+        });
+      }
+    }
+    return result;
+  })();
+  _inflight.set(identity.employeeId, promise);
+  try {
+    return await promise;
+  } finally {
+    _inflight.delete(identity.employeeId);
+  }
+}
+
+const _inflight = new Map<string, Promise<DayRunResult>>();
+
+function skippedResult(employeeId: string, phase: WorkdayPhase, reason: string): DayRunResult {
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    employeeId,
+    date: today,
+    cyclesRun: 0,
+    tasksCompleted: 0,
+    tasksSkipped: 0,
+    tasksFailed: 0,
+    toolCallsUsed: 0,
+    completionRate: 0,
+    stopReason: `skipped:${reason}` as DayRunResult['stopReason'],
+    reflection: `Skipped ${phase} run: ${reason}.`,
+    startedAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(),
   };
+}
 
-  logger.info('CorpGen workday starting', {
-    module: 'corpgen.bridge',
-    employeeId: identity.employeeId,
-    phase,
-    maxCycles: opts.maxCycles,
-    maxToolCalls: opts.maxToolCalls,
-  });
-  const result = await runWorkday(runOpts);
-  logger.info('CorpGen workday finished', {
-    module: 'corpgen.bridge',
-    employeeId: identity.employeeId,
-    cyclesRun: result.cyclesRun,
-    completionRate: result.completionRate,
-    stopReason: result.stopReason,
-    toolCallsUsed: result.toolCallsUsed,
-  });
-  return result;
+// ---------------------------------------------------------------------------
+// Manager briefing — Teams DM (always) + email (best-effort)
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the human manager Cassidy reports to. Resolution order:
+ *   1. CORPGEN_MANAGER_USER_ID env var (Teams aadObjectId, exact match)
+ *   2. CORPGEN_MANAGER_EMAIL env var (case-insensitive)
+ *   3. Display-name match "MOD Administrator" (default for the demo tenant)
+ */
+async function resolveManager(): Promise<{ userId: string; email?: string; displayName: string } | null> {
+  const { getAllActiveUsers, getUser, getUserByEmail } = await import('./proactive/userRegistry');
+  const envId = process.env.CORPGEN_MANAGER_USER_ID;
+  if (envId) {
+    const u = await getUser(envId);
+    if (u) return { userId: u.rowKey, email: u.email, displayName: u.displayName };
+  }
+  const envEmail = process.env.CORPGEN_MANAGER_EMAIL;
+  if (envEmail) {
+    const u = await getUserByEmail(envEmail);
+    if (u) return { userId: u.rowKey, email: u.email, displayName: u.displayName };
+  }
+  const all = await getAllActiveUsers();
+  const want = (process.env.CORPGEN_MANAGER_NAME || 'MOD Administrator').toLowerCase();
+  const u = all.find((x) => (x.displayName ?? '').toLowerCase() === want);
+  if (u) return { userId: u.rowKey, email: u.email, displayName: u.displayName };
+  return null;
+}
+
+/**
+ * Brief the manager after a meaningful CorpGen phase (init / reflect / monthly).
+ * Best-effort: sends a Teams DM via the proactive adapter and tries to send
+ * an email via the MailTools MCP. Email requires a TurnContext (OBO) so will
+ * gracefully degrade to a logged warning when called from the in-process
+ * scheduler. Teams DM works without context because the adapter has the bot's
+ * app credentials.
+ */
+export async function briefManager(phase: WorkdayPhase, result: DayRunResult): Promise<void> {
+  const mgr = await resolveManager();
+  if (!mgr) {
+    logger.warn('CorpGen briefing skipped: manager not resolved', { module: 'corpgen.brief', phase });
+    return;
+  }
+  const subject = `CorpGen ${phase} brief — ${result.date}`;
+  const body = [
+    `Hi ${mgr.displayName.split(' ')[0]}, here's your CorpGen ${phase} brief.`,
+    '',
+    summariseDayForTeams(result),
+  ].join('\n');
+
+  // Teams DM
+  try {
+    const { sendDirectMessage } = await import('./proactive/proactiveEngine');
+    const dm = await sendDirectMessage(mgr.userId, body);
+    if (!dm.ok) {
+      logger.warn('CorpGen brief Teams DM not delivered', {
+        module: 'corpgen.brief', phase, manager: mgr.userId, reason: dm.reason,
+      });
+    }
+  } catch (err) {
+    logger.warn('CorpGen brief Teams DM threw', { module: 'corpgen.brief', phase, error: String(err) });
+  }
+
+  // Email — best-effort. Without a TurnContext the MailTools MCP returns
+  // "MCP unavailable"; that's expected from the scheduler.
+  if (mgr.email) {
+    try {
+      const { sendEmail } = await import('./tools/mcpToolSetup');
+      const r = await sendEmail({ to: mgr.email, subject, body });
+      logger.info('CorpGen brief email attempted', {
+        module: 'corpgen.brief', phase, to: mgr.email, success: r.success,
+      });
+    } catch (err) {
+      logger.warn('CorpGen brief email threw', { module: 'corpgen.brief', phase, error: String(err) });
+    }
+  }
 }
 
 /** Compact, Teams-friendly summary of a CorpGen day. */

@@ -267,6 +267,20 @@ async function sendToConversation(ref: ConversationReference, text: string): Pro
   });
 }
 
+/**
+ * Send a direct Teams message to a user from outside a turn (e.g. from the
+ * CorpGen scheduler). Resolves the user via stored `ConversationReference`
+ * in the user registry. No-op when the adapter isn't initialised yet.
+ */
+export async function sendDirectMessage(userId: string, text: string): Promise<{ ok: boolean; reason?: string }> {
+  if (!_adapter) return { ok: false, reason: 'adapter not initialised' };
+  const { getStoredConversationRef } = await import('./userRegistry');
+  const ref = await getStoredConversationRef(userId);
+  if (!ref) return { ok: false, reason: 'no conversation reference for user' };
+  await sendToConversation(ref, text);
+  return { ok: true };
+}
+
 // ---------------------------------------------------------------------------
 // Manual trigger — called by /api/proactive-trigger endpoint
 // ---------------------------------------------------------------------------

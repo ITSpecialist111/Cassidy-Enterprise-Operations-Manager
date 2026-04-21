@@ -16,36 +16,37 @@
 
 import { logger } from './logger';
 import { startJob } from './corpgenJobs';
+import { getLocalParts } from './corpgenIntegration';
 
 type Phase = 'init' | 'cycle' | 'reflect' | 'monthly';
 
 const TICK_MS = 60_000; // poll every minute
+const TZ = process.env.CORPGEN_WORK_TZ || 'Australia/Sydney';
 let timer: ReturnType<typeof setInterval> | null = null;
 let lastFired: Map<string, string> = new Map(); // phase -> ISO minute already fired
 
-function utcMinuteKey(now: Date, phase: Phase): string {
-  return `${phase}:${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}T${now.getUTCHours()}:${now.getUTCMinutes()}`;
+function localMinuteKey(now: Date, phase: Phase): string {
+  const p = getLocalParts(now, TZ);
+  return `${phase}:${p.month}-${p.day}T${p.h}:${p.m}`;
 }
 
-/** True if `now` matches the cron window for `phase`. */
+/** True if `now` matches the cron window for `phase` in Sydney local time. */
 function isWindow(now: Date, phase: Phase): boolean {
-  const day = now.getUTCDay(); // 0=Sun, 6=Sat
-  const h = now.getUTCHours();
-  const m = now.getUTCMinutes();
-  const weekday = day >= 1 && day <= 5;
+  const p = getLocalParts(now, TZ);
+  const weekday = p.weekday !== 'Sat' && p.weekday !== 'Sun';
   switch (phase) {
     case 'init':
-      // Mon–Fri 08:50 UTC
-      return weekday && h === 8 && m === 50;
+      // 08:50 local, weekdays — Day Init before 09:00 working start
+      return weekday && p.h === 8 && p.m === 50;
     case 'cycle':
-      // Mon–Fri 09:00–16:40 UTC at minutes 0 / 20 / 40
-      return weekday && h >= 9 && h <= 16 && (m === 0 || m === 20 || m === 40);
+      // Every 20 min during 09:00–17:00 local (last cycle 17:00), weekdays
+      return weekday && p.h >= 9 && p.h <= 17 && (p.m === 0 || p.m === 20 || p.m === 40);
     case 'reflect':
-      // Mon–Fri 16:30 UTC
-      return weekday && h === 16 && m === 30;
+      // 17:20 local — Day End reflection just before close
+      return weekday && p.h === 17 && p.m === 20;
     case 'monthly':
-      // First day of month, 08:00 UTC, weekday only
-      return weekday && now.getUTCDate() === 1 && h === 8 && m === 0;
+      // 1st of month, 08:00 local, weekday
+      return weekday && p.day === 1 && p.h === 8 && p.m === 0;
   }
 }
 
@@ -69,7 +70,7 @@ function tick(): void {
   const phases: Phase[] = ['init', 'cycle', 'reflect', 'monthly'];
   for (const p of phases) {
     if (!isWindow(now, p)) continue;
-    const key = utcMinuteKey(now, p);
+    const key = localMinuteKey(now, p);
     if (lastFired.get(p) === key) continue; // already fired this minute
     lastFired.set(p, key);
     void firePhase(p);
