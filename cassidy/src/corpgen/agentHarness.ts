@@ -60,8 +60,18 @@ const APP_TO_STATIC: Record<string, string[]> = {
   SharePoint: ['readSharePointList'],
 };
 
-const COGNITIVE_NAMES = new Set(COGNITIVE_TOOL_DEFS.map(fn).filter(Boolean));
-const SUBAGENT_NAMES = new Set(SUBAGENT_TOOL_DEFS.map(fn).filter(Boolean));
+// Lazy-initialized to avoid circular dependency issues (subAgents imports agentHarness)
+let _cognitiveNames: Set<string> | null = null;
+let _subagentNames: Set<string> | null = null;
+
+function getCognitiveNames(): Set<string> {
+  if (!_cognitiveNames) _cognitiveNames = new Set(COGNITIVE_TOOL_DEFS.map(fn).filter(Boolean));
+  return _cognitiveNames;
+}
+function getSubagentNames(): Set<string> {
+  if (!_subagentNames) _subagentNames = new Set(SUBAGENT_TOOL_DEFS.map(fn).filter(Boolean));
+  return _subagentNames;
+}
 
 function fn(t: ChatCompletionTool): string {
   return t.type === 'function' ? t.function.name : '';
@@ -98,7 +108,7 @@ export function assembleToolList(
     const name = tool.function.name;
 
     // Cognitive + subagent tools always promoted
-    if (COGNITIVE_NAMES.has(name) || SUBAGENT_NAMES.has(name)) {
+    if (getCognitiveNames().has(name) || getSubagentNames().has(name)) {
       appRelevant.push(tool);
       continue;
     }

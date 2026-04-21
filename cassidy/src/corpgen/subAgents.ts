@@ -22,9 +22,7 @@
 // ---------------------------------------------------------------------------
 
 import { ulid } from 'ulid';
-import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat';
-import { getSharedOpenAI } from '../auth';
-import { config as appConfig } from '../featureConfig';
+import type { ChatCompletionTool } from 'openai/resources/chat';
 import { logger } from '../logger';
 import { runAgent } from './agentHarness';
 import type { TrajectoryDemo, AgentDefinition } from './types';
@@ -186,32 +184,39 @@ export async function runComputerUseSubAgent(req: CuaRequest): Promise<CuaResult
 }
 
 /**
- * Default CUA: generates a structured intent plan via GPT (NO actual GUI
- * automation). Swap with `registerCuaProvider()` to wire UFO2 or any other
+ * Default CUA: generates a structured intent plan via the harness (NO actual
+ * GUI automation). Swap with `registerCuaProvider()` to wire UFO2 or any other
  * computer-use agent. Cassidy's existing MCP tools (Mail/Teams/Planner/
  * Calendar) cover most office-app intents without needing GUI automation.
  */
 async function defaultIntentPlanner(req: CuaRequest): Promise<CuaResult> {
-  const openai = getSharedOpenAI();
   const demoBlock = (req.demos ?? []).length > 0
     ? `\n\nPrior successful demonstrations for ${req.app} (use as templates):\n${(req.demos ?? [])
         .map((d, i) => `[demo ${i + 1}] ${d.taskSummary}\nactions: ${d.actions.slice(0, 600)}`)
         .join('\n\n')}`
     : '';
-  const r = await openai.chat.completions.create({
-    model: appConfig.openAiDeployment,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are a computer-use planner. Given an app and an intent, return a JSON object: { "steps": ["..."], "result": "..." }. Do not perform actions; describe them. If prior demonstrations are provided, follow their pattern.' +
-          demoBlock,
-      },
-      { role: 'user', content: JSON.stringify({ app: req.app, intent: req.intent, args: req.args ?? {} }) },
-    ],
-    response_format: { type: 'json_object' },
+
+  const CUA_PLANNER_AGENT: AgentDefinition = {
+    agentId: 'cua-planner',
+    systemPrompt:
+      'You are a computer-use planner. Given an app and an intent, return a JSON object: { "steps": ["..."], "result": "..." }. Do not perform actions; describe them. If prior demonstrations are provided, follow their pattern.' +
+      demoBlock,
+    maxIterations: 1,
+    toolChoice: 'none',
+    responseFormat: 'json_object',
+  };
+
+  const outcome = await runAgent({
+    agent: CUA_PLANNER_AGENT,
+    userMessages: [{
+      role: 'user',
+      content: JSON.stringify({ app: req.app, intent: req.intent, args: req.args ?? {} }),
+    }],
+    tools: [],
+    dispatchTool: async () => { throw new Error('cua planner has no tools'); },
   });
-  const raw = r.choices[0]?.message?.content ?? '{}';
+
+  const raw = outcome.result ?? '{}';
   let steps: string[] = [];
   let result = '';
   try {
@@ -219,7 +224,7 @@ async function defaultIntentPlanner(req: CuaRequest): Promise<CuaResult> {
     steps = Array.isArray(parsed.steps) ? parsed.steps.map(String) : [];
     result = String(parsed.result ?? '');
   } catch { /* fall through */ }
-  return { ok: true, app: req.app, intent: req.intent, steps, result, durationMs: 0 };
+  return { ok: outcome.ok, app: req.app, intent: req.intent, steps, result, durationMs: 0 };
 }
 
 // ---------------------------------------------------------------------------

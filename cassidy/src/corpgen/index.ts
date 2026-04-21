@@ -103,3 +103,12 @@ export type {
   JudgeOptions,
   DayJudgement,
 } from './artifactJudge';
+export {
+  runAgent,
+  assembleToolList,
+} from './agentHarness';
+export {
+  getAppIndex,
+  rebuildAppIndex,
+  clearAllIndices,
+} from './faissIndex';

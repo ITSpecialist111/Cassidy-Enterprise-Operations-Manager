@@ -204,15 +204,27 @@ export function NeuralCore({ onNodeClick }: Props) {
     graph.d3Force('charge')?.strength(-120);
     graph.d3Force('link')?.distance((l: any) => 40 + (1 - (l.strength || 0.5)) * 60);
 
-    // Add bloom post-processing
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      2.5, // strength
-      1,   // radius
-      0,   // threshold
-    );
-    bloomPassRef.current = bloomPass;
-    graph.postProcessingComposer().addPass(bloomPass);
+    // Add bloom post-processing (best-effort — composer may be unavailable in some
+    // 3d-force-graph builds; the visualisation still renders without bloom).
+    try {
+      const bloomPass = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        2.5, // strength
+        1,   // radius
+        0,   // threshold
+      );
+      bloomPassRef.current = bloomPass;
+      const composer = typeof graph.postProcessingComposer === 'function'
+        ? graph.postProcessingComposer()
+        : null;
+      if (composer && typeof composer.addPass === 'function') {
+        composer.addPass(bloomPass);
+      } else {
+        console.warn('[NeuralCore] post-processing composer unavailable; rendering without bloom');
+      }
+    } catch (err) {
+      console.warn('[NeuralCore] bloom setup failed', err);
+    }
 
     // Auto-orbit when idle
     let angle = 0;

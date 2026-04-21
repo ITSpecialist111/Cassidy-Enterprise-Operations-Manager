@@ -4,6 +4,43 @@ All notable changes to the Cassidy Enterprise Operations Manager are documented 
 
 ## [unreleased] — 2026-04-21
 
+### Agentic harness + FAISS vector index + per-task tool filtering
+
+Closes the last three gaps between the Cassidy implementation and the CorpGen paper (Jaye et al., arXiv:2602.14229). Inspired by the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) pattern of declarative agent definitions with isolated execution.
+
+#### New files
+
+- **`cassidy/src/corpgen/agentHarness.ts`** — Reusable agentic execution engine. A single `runAgent(config)` function replaces the three bespoke LLM loops that previously existed in `digitalEmployee.ts`, `subAgents.ts` (research), and `subAgents.ts` (CUA planner). Features:
+  - **Declarative `AgentDefinition`** — agents are plain objects (not classes): `agentId`, `systemPrompt` (static or dynamic builder), `maxIterations`, `toolChoice`, `responseFormat`, optional `toolAllowlist`, and `continuationPrompt` for multi-pass reasoning.
+  - **Per-task tool filtering** (CorpGen Gap #3) — `assembleToolList()` sorts tools by relevance to the current task's app. Cognitive and sub-agent tools are always promoted first; app-relevant MCP tools (matched by server prefix, e.g. `mcp_MailTools_*` for Mail tasks) come next; remaining tools fill the 128-tool cap. Static mapping in `APP_TO_MCP_PREFIX` / `APP_TO_STATIC` covers Mail, Calendar, Teams, Planner, SharePoint, OneDrive.
+  - **Context isolation** — each `runAgent()` call gets its own message array, never shared across invocations.
+  - **Lifecycle hooks** — `onToolCall`, `onToolResult`, `onIteration`, `onSummarize`, `onComplete` for observability without coupling.
+  - **Budget tracking** — shared `HarnessBudget` (wallclock + tool-call caps) threaded from the day runner.
+  - **Adaptive summarisation** — delegates to the existing `compressIfNeeded()` between iterations.
+  - **Continuation injection** — for `toolChoice='none'` agents (e.g. research sub-agent), injects `continuationPrompt` between non-terminal iterations.
+
+- **`cassidy/src/corpgen/faissIndex.ts`** — FAISS vector index for experiential trajectory retrieval. Uses `faiss-node` (`optionalDependencies`) with automatic fallback to in-memory cosine scan when native bindings are unavailable:
+  - One `IndexFlatIP` per app (application-partitioned, per the paper).
+  - Lazy load from `CorpGenTrajectories` Table Storage on first access, cached for 10 min.
+  - Incremental `add()` after trajectory capture — no full rebuild needed.
+  - L2-normalised inner product ≡ cosine similarity.
+  - `getAppIndex(app)`, `rebuildAppIndex(app)`, `clearAllIndices()` public API.
+
+#### Modified files
+
+- **`cassidy/src/corpgen/types.ts`** — Added `AgentDefinition`, `AgentPromptContext`, `HarnessRunConfig`, `HarnessBudget`, `HarnessHooks`, `HarnessOutcome`, `VectorIndex` types.
+- **`cassidy/src/corpgen/digitalEmployee.ts`** — `runReactLoop()` now delegates to `runAgent()` with the `CORPGEN_REACT_AGENT` definition. Lifecycle hooks preserve the existing event-recording and demo-injection behaviour. Removed the bespoke 140-line inner loop; the harness handles tool assembly, budget, and summarisation. Unused imports (`compressIfNeeded`, `estimateTokens`, `ChatCompletionMessageParam`) and `replaceHistoryWithSummary()` removed.
+- **`cassidy/src/corpgen/subAgents.ts`** — `runResearchAgent()` and `defaultIntentPlanner()` both use `runAgent()` instead of direct OpenAI calls. Research agent: `toolChoice='none'`, `continuationPrompt`, `responseFormatFn` for JSON on final iteration. CUA planner: single-shot, `responseFormat='json_object'`. Unused imports (`getSharedOpenAI`, `appConfig`, `ChatCompletionMessageParam`) removed.
+- **`cassidy/src/corpgen/experientialLearning.ts`** — FAISS wired as the primary retrieval path in `retrieveSimilarTrajectories()` (try FAISS → fall through to in-memory cosine scan on failure). `captureSuccessfulTrajectory()` incrementally adds to the FAISS index after Table Storage upsert.
+- **`cassidy/src/corpgen/index.ts`** — Exports `runAgent`, `assembleToolList`, `getAppIndex`, `rebuildAppIndex`, `clearAllIndices`.
+- **`cassidy/package.json`** — Added `faiss-node: ^0.6.0` to `optionalDependencies`.
+
+#### Verification
+
+- `npx tsc --noEmit` — clean, no errors.
+- `npx vitest run` — 513/513 tests pass across 45 suites.
+- Circular dependency between `agentHarness.ts` ↔ `subAgents.ts` resolved by lazy-initialising the cognitive/subagent name sets (`getCognitiveNames()` / `getSubagentNames()`) instead of computing them at module load time.
+
 ### Daily-operator promotion (5-question design pass)
 
 Turns Cassidy from a "fires-when-poked" agent into a CorpGen-style daily operator. Five design answers from MOD Administrator drove the changes:

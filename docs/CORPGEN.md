@@ -17,6 +17,9 @@ Cassidy is both a Microsoft Agent Framework bot (Teams-facing, OBO-authenticated
 | Comm-channel fallback (Mail ↔ Teams) | [cassidy/src/corpgen/commFallback.ts](../cassidy/src/corpgen/commFallback.ts) |
 | Upward propagation / escalation | [cassidy/src/corpgen/hierarchicalPlanner.ts](../cassidy/src/corpgen/hierarchicalPlanner.ts) (`propagateTaskChange`) |
 | Artifact judge — task + day-level (LLM-as-judge) | [cassidy/src/corpgen/artifactJudge.ts](../cassidy/src/corpgen/artifactJudge.ts) |
+| Reusable agentic harness (inspired by Claude Agent SDK) | [cassidy/src/corpgen/agentHarness.ts](../cassidy/src/corpgen/agentHarness.ts) |
+| FAISS vector index for experiential retrieval | [cassidy/src/corpgen/faissIndex.ts](../cassidy/src/corpgen/faissIndex.ts) |
+| Per-task tool filtering (app-aware tool assembly) | [cassidy/src/corpgen/agentHarness.ts](../cassidy/src/corpgen/agentHarness.ts) (`assembleToolList`) |
 | Multi-day continuity (§3.7) | `runMultiDay` in [cassidy/src/corpgen/digitalEmployee.ts](../cassidy/src/corpgen/digitalEmployee.ts) |
 | Organisation-scale runs (§3.7) | `runOrganization` in [cassidy/src/corpgen/digitalEmployee.ts](../cassidy/src/corpgen/digitalEmployee.ts) |
 | Cassidy ↔ CorpGen bridge | [cassidy/src/corpgenIntegration.ts](../cassidy/src/corpgenIntegration.ts) |
@@ -195,8 +198,8 @@ Three operator scripts under [skill-assets/](../skill-assets/) exercise the sche
 | Tiered memory | Faithful | Working / Structured LTM / Semantic, with cycle-start retrieval. |
 | Adaptive summarisation | Faithful | 4 k-token threshold; critical-turn retention. |
 | Cognitive tools (§3.5) | Faithful | All five tools shipped. |
-| Sub-agents as tools (§3.4.2) | Faithful (extended) | Default CUA returns a structured intent plan only — Cassidy's MCP servers already cover Office actions. A real CUA backend (UFO2, OpenAI computer-use-preview, etc.) can be plugged via `registerCuaProvider`. |
-| Experiential learning (§3.6) | Faithful | Cosine on Azure OpenAI embeddings, Jaccard fallback when embeddings unavailable. |
+| Sub-agents as tools (§3.4.2) | Faithful (extended) | Default CUA returns a structured intent plan only — Cassidy's MCP servers already cover Office actions. A real CUA backend (UFO2, OpenAI computer-use-preview, etc.) can be plugged via `registerCuaProvider`. Both research and CUA sub-agents now execute through the shared agentic harness (`runAgent`), ensuring consistent context isolation and lifecycle hooks. |
+| Experiential learning (§3.6) | Faithful (extended) | Cosine on Azure OpenAI embeddings, Jaccard fallback when embeddings unavailable. FAISS vector index (`faiss-node`, optional) provides O(1) approximate nearest-neighbour search per app partition; falls back to in-memory cosine scan when native bindings are unavailable. |
 | Identity + jitter | Faithful | ±10 min jitter, 5-min minimum cycle interval. |
 | Retry-and-skip (3 × 30) | Faithful | Plus skip-to-keep-the-day-moving semantics. |
 | Emergent collaboration (§3.7) | Operationally aligned | Cassidy collaborates via the same async Mail + Teams MCP servers, no shared in-process state. |
