@@ -1,14 +1,10 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import ForceGraph3D from '3d-force-graph';
-import type { ForceGraph3DInstance } from '3d-force-graph';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import * as THREE from 'three';
+import ForceGraph from 'force-graph';
 
 // ---------------------------------------------------------------------------
-// Types
+// Obsidian-style 2D knowledge-graph view of Cassidy's mind.
+// Calm flat aesthetic inspired by Karpathy's LLM Wiki + Obsidian Graph View.
 // ---------------------------------------------------------------------------
 
 interface MindmapNode {
@@ -16,17 +12,23 @@ interface MindmapNode {
   label: string;
   type: 'core' | 'memory' | 'thought' | 'tool' | 'agent' | 'task' | 'objective' | 'reflection' | 'user';
   group: string;
-  importance: number; // 1-10
+  importance: number;
   detail?: string;
   ts?: string;
   status?: string;
+  __degree?: number;
+  __neighbors?: Set<string>;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
 }
 
 interface MindmapLink {
-  source: string;
-  target: string;
+  source: string | MindmapNode;
+  target: string | MindmapNode;
   type: 'memory_recall' | 'tool_use' | 'thought_chain' | 'agent_link' | 'task_dep' | 'objective' | 'core';
-  strength: number; // 0-1
+  strength: number;
   label?: string;
 }
 
@@ -42,70 +44,23 @@ interface MindmapResponse {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Visual Config
-// ---------------------------------------------------------------------------
-
 const NODE_COLORS: Record<string, string> = {
-  core:       '#4ea1ff', // accent blue — Cassidy's core
-  memory:     '#00ffcc', // cyan-green
-  thought:    '#bf00ff', // electric purple
-  tool:       '#00ff66', // matrix green
-  agent:      '#ff6600', // amber
-  task:       '#ff3366', // hot pink
-  objective:  '#ffcc00', // gold
-  reflection: '#9966ff', // soft purple
-  user:       '#ffffff', // white
+  core:       '#7aa2f7',
+  memory:     '#9ece6a',
+  thought:    '#bb9af7',
+  tool:       '#7dcfff',
+  agent:      '#e0af68',
+  task:       '#f7768e',
+  objective:  '#e0af68',
+  reflection: '#bb9af7',
+  user:       '#c0caf5',
 };
 
-const NODE_SHAPES: Record<string, number> = {
-  core: 0,       // sphere
-  memory: 1,     // diamond (octahedron)
-  thought: 0,    // sphere
-  tool: 2,       // box
-  agent: 3,      // dodecahedron
-  task: 2,       // box
-  objective: 3,  // dodecahedron
-  reflection: 0, // sphere
-  user: 0,       // sphere
-};
-
-const LINK_COLORS: Record<string, string> = {
-  memory_recall: 'rgba(0,255,204,0.15)',
-  tool_use:      'rgba(0,255,102,0.15)',
-  thought_chain: 'rgba(191,0,255,0.2)',
-  agent_link:    'rgba(255,102,0,0.15)',
-  task_dep:      'rgba(255,51,102,0.12)',
-  objective:     'rgba(255,204,0,0.12)',
-  core:          'rgba(78,161,255,0.25)',
-};
-
-const PARTICLE_COLORS: Record<string, string> = {
-  memory_recall: '#00ffcc',
-  tool_use:      '#00ff66',
-  thought_chain: '#bf00ff',
-  agent_link:    '#ff6600',
-  task_dep:      '#ff3366',
-  objective:     '#ffcc00',
-  core:          '#4ea1ff',
-};
-
-// ---------------------------------------------------------------------------
-// Geometry cache
-// ---------------------------------------------------------------------------
-
-function makeGeometry(shape: number, size: number): THREE.BufferGeometry {
-  switch (shape) {
-    case 1: return new THREE.OctahedronGeometry(size);
-    case 2: return new THREE.BoxGeometry(size * 1.3, size * 1.3, size * 1.3);
-    case 3: return new THREE.DodecahedronGeometry(size);
-    default: return new THREE.SphereGeometry(size, 16, 12);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+const BG = '#1a1b26';
+const EDGE_COLOR = 'rgba(192, 202, 245, 0.12)';
+const EDGE_HIGHLIGHT = 'rgba(192, 202, 245, 0.55)';
+const LABEL_COLOR = '#a9b1d6';
+const LABEL_HIGHLIGHT = '#ffffff';
 
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { credentials: 'include' });
@@ -115,19 +70,19 @@ async function fetchJson<T>(url: string): Promise<T> {
 }
 
 interface Props {
-  /** Callback when a node is clicked — opens detail panel. */
   onNodeClick?: (node: MindmapNode | null) => void;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FG = any;
+
 export function NeuralCore({ onNodeClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const graphRef = useRef<ForceGraph3DInstance | null>(null);
+  const graphRef = useRef<FG | null>(null);
+  const hoverNodeRef = useRef<MindmapNode | null>(null);
+  const highlightNodesRef = useRef<Set<string>>(new Set());
+  const highlightLinksRef = useRef<Set<MindmapLink>>(new Set());
   const [selectedNode, setSelectedNode] = useState<MindmapNode | null>(null);
-  const [bloomStrength, setBloomStrength] = useState(2.5);
-  const bloomPassRef = useRef<UnrealBloomPass | null>(null);
-  const manualComposerRef = useRef<EffectComposer | null>(null);
-  const manualComposerDisposed = useRef(false);
-  const rafIdRef = useRef<number | null>(null);
 
   const { data, error } = useQuery({
     queryKey: ['mindmap'],
@@ -135,262 +90,186 @@ export function NeuralCore({ onNodeClick }: Props) {
     refetchInterval: 8_000,
   });
 
-  // Create graph once
+  const enriched = useMemo(() => {
+    if (!data) return null;
+    const nodesById = new Map<string, MindmapNode>();
+    data.nodes.forEach((n) => {
+      n.__degree = 0;
+      n.__neighbors = new Set();
+      nodesById.set(n.id, n);
+    });
+    data.links.forEach((l) => {
+      const sId = typeof l.source === 'string' ? l.source : l.source.id;
+      const tId = typeof l.target === 'string' ? l.target : l.target.id;
+      const s = nodesById.get(sId);
+      const t = nodesById.get(tId);
+      if (s) { s.__degree = (s.__degree || 0) + 1; s.__neighbors!.add(tId); }
+      if (t) { t.__degree = (t.__degree || 0) + 1; t.__neighbors!.add(sId); }
+    });
+    return { nodes: data.nodes, links: data.links };
+  }, [data]);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Ctor = ForceGraph3D as unknown as new (el: HTMLElement) => ForceGraph3DInstance;
-    const graph: ForceGraph3DInstance = new Ctor(containerRef.current)
-      .backgroundColor('#000003')
-      .showNavInfo(false)
-      .nodeLabel((n: any) => `<div style="background:#11151cee;color:#e6edf3;padding:8px 12px;border-radius:6px;border:1px solid #232a36;font-size:12px;max-width:260px">
-        <strong style="color:${NODE_COLORS[n.type] || '#4ea1ff'}">${n.label}</strong>
-        <div style="color:#8b95a7;margin-top:4px;font-size:11px">${n.type}${n.detail ? ' — ' + n.detail.slice(0, 120) : ''}</div>
-      </div>`)
-      .nodeThreeObject((n: any) => {
-        const size = 2 + (n.importance || 3) * 0.8;
-        const shape = NODE_SHAPES[n.type] ?? 0;
-        const geo = makeGeometry(shape, size);
-        const color = NODE_COLORS[n.type] || '#4ea1ff';
-        const mat = new THREE.MeshPhongMaterial({
-          color: new THREE.Color(color),
-          emissive: new THREE.Color(color),
-          emissiveIntensity: n.type === 'core' ? 0.9 : 0.5,
-          transparent: true,
-          opacity: 0.92,
-        });
-        const mesh = new THREE.Mesh(geo, mat);
+    const Ctor = ForceGraph as unknown as new (el: HTMLElement) => any;
+    const graph: FG = new Ctor(containerRef.current);
 
-        // Pulsing ring for active/core nodes
-        if (n.type === 'core' || n.status === 'in_progress') {
-          const ringGeo = new THREE.RingGeometry(size * 1.4, size * 1.6, 32);
-          const ringMat = new THREE.MeshBasicMaterial({
-            color: new THREE.Color(color),
-            transparent: true,
-            opacity: 0.3,
-            side: THREE.DoubleSide,
-          });
-          const ring = new THREE.Mesh(ringGeo, ringMat);
-          mesh.add(ring);
+    graph
+      .backgroundColor(BG)
+      .nodeRelSize(4)
+      .nodeId('id')
+      .linkSource('source')
+      .linkTarget('target')
+      .linkColor(() => EDGE_COLOR)
+      .linkWidth((l: MindmapLink) => (highlightLinksRef.current.has(l) ? 1.4 : 0.6))
+      .linkDirectionalParticles((l: MindmapLink) => (highlightLinksRef.current.has(l) ? 2 : 0))
+      .linkDirectionalParticleWidth(2)
+      .linkDirectionalParticleColor(() => EDGE_HIGHLIGHT)
+      .nodeCanvasObject((node: MindmapNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
+        const isHover = hoverNodeRef.current?.id === node.id;
+        const isNeighbour = highlightNodesRef.current.has(node.id);
+        const dimmed = !!hoverNodeRef.current && !isHover && !isNeighbour;
+
+        const degree = node.__degree || 0;
+        const baseR = 3 + Math.sqrt(degree) * 1.6;
+        const r = isHover ? baseR * 1.4 : baseR;
+
+        const color = NODE_COLORS[node.type] || '#9aa5ce';
+
+        if (isHover || isNeighbour) {
+          ctx.beginPath();
+          ctx.arc(node.x!, node.y!, r * 2.2, 0, 2 * Math.PI);
+          ctx.fillStyle = hexToRgba(color, isHover ? 0.18 : 0.1);
+          ctx.fill();
         }
 
-        return mesh;
+        ctx.beginPath();
+        ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
+        ctx.fillStyle = dimmed ? hexToRgba(color, 0.25) : color;
+        ctx.fill();
+
+        ctx.lineWidth = 1 / globalScale;
+        ctx.strokeStyle = dimmed ? 'rgba(0,0,0,0.2)' : 'rgba(26,27,38,0.9)';
+        ctx.stroke();
+
+        const showLabel = globalScale >= 1.4 || isHover || isNeighbour;
+        if (showLabel) {
+          const fontSize = Math.max(2.5, 11 / globalScale);
+          ctx.font = `${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'top';
+          ctx.fillStyle = isHover ? LABEL_HIGHLIGHT : LABEL_COLOR;
+          if (dimmed) ctx.fillStyle = 'rgba(169,177,214,0.35)';
+          const label = node.label.length > 32 ? node.label.slice(0, 30) + '\u2026' : node.label;
+          ctx.fillText(label, node.x!, node.y! + r + 2);
+        }
       })
-      .linkColor((l: any) => LINK_COLORS[l.type] || 'rgba(100,150,255,0.1)')
-      .linkWidth((l: any) => 0.3 + (l.strength || 0.3) * 1.5)
-      .linkOpacity(0.6)
-      .linkDirectionalParticles((l: any) => Math.max(1, Math.round((l.strength || 0.3) * 5)))
-      .linkDirectionalParticleSpeed(0.004)
-      .linkDirectionalParticleWidth(1.8)
-      .linkDirectionalParticleColor((l: any) => PARTICLE_COLORS[l.type] || '#00ffff')
-      .linkCurvature(0.15)
-      .onNodeClick((n: any) => {
-        setSelectedNode(n);
-        onNodeClick?.(n);
-        // Fly to node
-        const dist = 80;
-        const pos = n;
-        graph.cameraPosition(
-          { x: pos.x + dist, y: pos.y + dist / 2, z: pos.z + dist },
-          { x: pos.x, y: pos.y, z: pos.z },
-          1200,
-        );
+      .nodePointerAreaPaint((node: MindmapNode, color: string, ctx: CanvasRenderingContext2D) => {
+        const degree = node.__degree || 0;
+        const r = (3 + Math.sqrt(degree) * 1.6) * 1.6;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(node.x!, node.y!, r, 0, 2 * Math.PI);
+        ctx.fill();
+      })
+      .onNodeHover((node: MindmapNode | null) => {
+        hoverNodeRef.current = node;
+        highlightNodesRef.current.clear();
+        highlightLinksRef.current.clear();
+        if (node) {
+          highlightNodesRef.current.add(node.id);
+          node.__neighbors?.forEach((id) => highlightNodesRef.current.add(id));
+          const g = graphRef.current;
+          if (g) {
+            const links = (g.graphData() as { links: MindmapLink[] }).links;
+            links.forEach((l) => {
+              const sId = typeof l.source === 'string' ? l.source : (l.source as MindmapNode).id;
+              const tId = typeof l.target === 'string' ? l.target : (l.target as MindmapNode).id;
+              if (sId === node.id || tId === node.id) highlightLinksRef.current.add(l);
+            });
+          }
+        }
+        if (containerRef.current) {
+          containerRef.current.style.cursor = node ? 'pointer' : 'default';
+        }
+      })
+      .onNodeClick((node: MindmapNode) => {
+        setSelectedNode(node);
+        onNodeClick?.(node);
+        graphRef.current?.centerAt(node.x, node.y, 800);
+        graphRef.current?.zoom(2.2, 800);
       })
       .onBackgroundClick(() => {
         setSelectedNode(null);
         onNodeClick?.(null);
       })
-      .d3AlphaDecay(0.01)
-      .d3VelocityDecay(0.15)
-      .warmupTicks(80)
-      .cooldownTime(3000);
+      .cooldownTicks(120)
+      .d3AlphaDecay(0.018)
+      .d3VelocityDecay(0.3);
 
-    // Forces
-    graph.d3Force('charge')?.strength(-120);
-    graph.d3Force('link')?.distance((l: any) => 40 + (1 - (l.strength || 0.5)) * 60);
-
-    // Add bloom post-processing. Try the built-in composer from
-    // three-render-objects first; if it isn't there (older bundle, dual-three
-    // mismatch, etc.) fall back to constructing our own EffectComposer that
-    // wraps the graph's renderer/scene/camera and runs each frame via
-    // onEngineTick.
-    const installBloom = (): boolean => {
-      const bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(window.innerWidth, window.innerHeight),
-        bloomStrength,
-        1,
-        0,
-      );
-      bloomPassRef.current = bloomPass;
-
-      // Path 1: built-in composer from three-render-objects.
-      try {
-        const ppc = (graph as unknown as { postProcessingComposer?: unknown }).postProcessingComposer;
-        const builtIn = typeof ppc === 'function'
-          ? (ppc as () => unknown).call(graph)
-          : null;
-        if (builtIn && typeof (builtIn as { addPass?: unknown }).addPass === 'function') {
-          (builtIn as EffectComposer).addPass(bloomPass);
-          return true;
-        }
-      } catch {
-        // fall through to manual composer
-      }
-
-      // Path 2: manual EffectComposer wired to graph.renderer/scene/camera.
-      try {
-        const rendererFn = (graph as unknown as { renderer?: unknown }).renderer;
-        const sceneFn = (graph as unknown as { scene?: unknown }).scene;
-        const cameraFn = (graph as unknown as { camera?: unknown }).camera;
-        const renderer = typeof rendererFn === 'function' ? (rendererFn as () => unknown).call(graph) : null;
-        const scene = typeof sceneFn === 'function' ? (sceneFn as () => unknown).call(graph) : null;
-        const camera = typeof cameraFn === 'function' ? (cameraFn as () => unknown).call(graph) : null;
-        if (!renderer || !scene || !camera) return false;
-        const composer = new EffectComposer(renderer as THREE.WebGLRenderer);
-        composer.setSize(window.innerWidth, window.innerHeight);
-        composer.addPass(new RenderPass(scene as THREE.Scene, camera as THREE.Camera));
-        composer.addPass(bloomPass);
-        manualComposerRef.current = composer;
-        const renderLoop = () => {
-          if (manualComposerDisposed.current) return;
-          composer.render();
-          rafIdRef.current = requestAnimationFrame(renderLoop);
-        };
-        rafIdRef.current = requestAnimationFrame(renderLoop);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    // Expose for ad-hoc debugging in the browser console.
-    (window as unknown as { __cassidyGraph?: unknown }).__cassidyGraph = graph;
-
-    // Poll requestAnimationFrame for up to 5s waiting for the inner
-    // three-render-objects kapsule to expose its renderer/composer, then
-    // install bloom. With `new ForceGraph3D(...)` the composer is normally
-    // ready on the first frame.
-    let attempts = 0;
-    const MAX_ATTEMPTS = 300;
-    const tryInstall = () => {
-      if (manualComposerDisposed.current) return;
-      attempts++;
-      if (installBloom()) return;
-      if (attempts < MAX_ATTEMPTS) {
-        rafIdRef.current = requestAnimationFrame(tryInstall);
-      } else {
-        console.warn('[NeuralCore] no composer path succeeded; rendering without bloom');
-      }
-    };
-    rafIdRef.current = requestAnimationFrame(tryInstall);
-
-    // Auto-orbit when idle
-    let angle = 0;
-    const orbit = () => {
-      angle += 0.001;
-      graph.cameraPosition({
-        x: Math.sin(angle) * 300,
-        z: Math.cos(angle) * 300,
-      });
-    };
-    const orbitTimer = setInterval(orbit, 50);
-
-    // Ambient and directional lights
-    const scene = graph.scene();
-    scene.add(new THREE.AmbientLight(0x222233, 1.5));
-    const dirLight = new THREE.DirectionalLight(0x4ea1ff, 0.6);
-    dirLight.position.set(100, 200, 100);
-    scene.add(dirLight);
+    graph.d3Force('charge')?.strength(-90);
+    graph.d3Force('link')?.distance(36);
 
     graphRef.current = graph;
 
-    // Resize handler
     const onResize = () => {
       graph.width(containerRef.current?.clientWidth || window.innerWidth);
       graph.height(containerRef.current?.clientHeight || window.innerHeight);
-      manualComposerRef.current?.setSize(
-        containerRef.current?.clientWidth || window.innerWidth,
-        containerRef.current?.clientHeight || window.innerHeight,
-      );
     };
     window.addEventListener('resize', onResize);
     onResize();
 
     return () => {
-      clearInterval(orbitTimer);
       window.removeEventListener('resize', onResize);
-      manualComposerDisposed.current = true;
-      if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
-      manualComposerRef.current?.dispose?.();
-      manualComposerRef.current = null;
       graph._destructor?.();
     };
-  }, []);
+  }, [onNodeClick]);
 
-  // Update graph data when API responds
   useEffect(() => {
-    if (!graphRef.current || !data) return;
-    graphRef.current.graphData({
-      nodes: data.nodes,
-      links: data.links,
-    });
-  }, [data]);
-
-  // Bloom strength slider
-  useEffect(() => {
-    if (bloomPassRef.current) {
-      bloomPassRef.current.strength = bloomStrength;
-    }
-  }, [bloomStrength]);
+    if (!graphRef.current || !enriched) return;
+    graphRef.current.graphData({ nodes: enriched.nodes, links: enriched.links });
+  }, [enriched]);
 
   const handleReset = useCallback(() => {
-    graphRef.current?.cameraPosition({ x: 0, y: 0, z: 300 }, { x: 0, y: 0, z: 0 }, 1500);
+    graphRef.current?.zoomToFit(800, 60);
     setSelectedNode(null);
     onNodeClick?.(null);
   }, [onNodeClick]);
 
+  const typeCounts = useMemo(() => {
+    if (!data) return {} as Record<string, number>;
+    const counts: Record<string, number> = {};
+    data.nodes.forEach((n) => { counts[n.type] = (counts[n.type] || 0) + 1; });
+    return counts;
+  }, [data]);
+
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 500 }}>
-      {/* KPI bar */}
+    <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 500, background: BG }}>
       {data?.stats && (
         <div className="neural-kpi-bar">
-          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: '#00ffcc' }}>{data.stats.totalMemories}</span><span className="neural-kpi-lbl">Memories</span></div>
-          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: '#bf00ff' }}>{data.stats.activeThoughts}</span><span className="neural-kpi-lbl">Thoughts</span></div>
-          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: '#00ff66' }}>{data.stats.toolsUsed}</span><span className="neural-kpi-lbl">Tools</span></div>
-          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: '#ff6600' }}>{data.stats.agentsOnline}</span><span className="neural-kpi-lbl">Agents</span></div>
-          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: '#ff3366' }}>{data.stats.tasksToday}</span><span className="neural-kpi-lbl">Tasks</span></div>
+          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: NODE_COLORS.memory }}>{data.stats.totalMemories}</span><span className="neural-kpi-lbl">Memories</span></div>
+          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: NODE_COLORS.thought }}>{data.stats.activeThoughts}</span><span className="neural-kpi-lbl">Thoughts</span></div>
+          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: NODE_COLORS.tool }}>{data.stats.toolsUsed}</span><span className="neural-kpi-lbl">Tools</span></div>
+          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: NODE_COLORS.agent }}>{data.stats.agentsOnline}</span><span className="neural-kpi-lbl">Agents</span></div>
+          <div className="neural-kpi"><span className="neural-kpi-val" style={{ color: NODE_COLORS.task }}>{data.stats.tasksToday}</span><span className="neural-kpi-lbl">Tasks</span></div>
         </div>
       )}
 
-      {/* Controls overlay */}
       <div className="neural-controls">
-        <button className="neural-btn" onClick={handleReset} title="Reset camera">Reset</button>
-        <label className="neural-slider-wrap" title="Bloom intensity">
-          <span style={{ fontSize: 11, color: '#8b95a7' }}>Glow</span>
-          <input
-            type="range"
-            min="0"
-            max="5"
-            step="0.1"
-            value={bloomStrength}
-            onChange={(e) => setBloomStrength(parseFloat(e.target.value))}
-            className="neural-slider"
-          />
-        </label>
+        <button className="neural-btn" onClick={handleReset} title="Fit graph to view">Fit</button>
       </div>
 
-      {/* Legend */}
       <div className="neural-legend">
         {Object.entries(NODE_COLORS).map(([type, color]) => (
           <div key={type} className="neural-legend-item">
             <span className="neural-legend-dot" style={{ background: color }} />
-            <span>{type}</span>
+            <span>{type}{typeCounts[type] ? ` (${typeCounts[type]})` : ''}</span>
           </div>
         ))}
       </div>
 
-      {/* Selected node detail */}
       {selectedNode && (
         <div className="neural-detail-panel">
           <div className="neural-detail-header">
@@ -398,22 +277,32 @@ export function NeuralCore({ onNodeClick }: Props) {
             <strong>{selectedNode.label}</strong>
             <button className="neural-detail-close" onClick={() => { setSelectedNode(null); onNodeClick?.(null); }}>x</button>
           </div>
-          <div className="neural-detail-type">{selectedNode.type} — importance {selectedNode.importance}/10</div>
+          <div className="neural-detail-type">
+            {selectedNode.type} &mdash; importance {selectedNode.importance}/10
+            {selectedNode.__degree !== undefined ? ` \u2014 ${selectedNode.__degree} links` : ''}
+          </div>
           {selectedNode.detail && <div className="neural-detail-body">{selectedNode.detail}</div>}
           {selectedNode.ts && <div className="neural-detail-ts">{new Date(selectedNode.ts).toLocaleString()}</div>}
           {selectedNode.status && <div className="neural-detail-status">Status: {selectedNode.status}</div>}
         </div>
       )}
 
-      {/* Error state */}
       {error && (
-        <div style={{ position: 'absolute', top: 60, left: 20, color: '#f85149', fontSize: 13 }}>
+        <div style={{ position: 'absolute', top: 60, left: 20, color: '#f7768e', fontSize: 13 }}>
           Failed to load mindmap: {(error as Error).message}
         </div>
       )}
 
-      {/* 3D canvas container */}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
     </div>
   );
+}
+
+function hexToRgba(hex: string, a: number): string {
+  const m = hex.replace('#', '');
+  const bigint = parseInt(m.length === 3 ? m.split('').map((c) => c + c).join('') : m, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
 }
