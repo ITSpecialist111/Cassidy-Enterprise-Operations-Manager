@@ -214,7 +214,7 @@ export function NeuralCore({ onNodeClick }: Props) {
     // mismatch, etc.) fall back to constructing our own EffectComposer that
     // wraps the graph's renderer/scene/camera and runs each frame via
     // onEngineTick.
-    const installBloom = (): boolean => {
+    const installBloom = (verbose = false): boolean => {
       const bloomPass = new UnrealBloomPass(
         new THREE.Vector2(window.innerWidth, window.innerHeight),
         bloomStrength,
@@ -225,38 +225,50 @@ export function NeuralCore({ onNodeClick }: Props) {
 
       // Path 1: built-in composer
       try {
-        const builtIn = typeof graph.postProcessingComposer === 'function'
-          ? graph.postProcessingComposer()
+        const ppc = (graph as unknown as { postProcessingComposer?: unknown }).postProcessingComposer;
+        const builtIn = typeof ppc === 'function'
+          ? (ppc as () => unknown).call(graph)
           : null;
+        if (verbose) {
+          console.info('[NeuralCore] built-in composer probe', {
+            hasFn: typeof ppc === 'function',
+            builtIn,
+            addPass: builtIn && typeof (builtIn as { addPass?: unknown }).addPass,
+          });
+        }
         if (builtIn && typeof (builtIn as { addPass?: unknown }).addPass === 'function') {
           (builtIn as EffectComposer).addPass(bloomPass);
+          console.info('[NeuralCore] bloom installed via built-in composer');
           return true;
         }
       } catch (err) {
         console.warn('[NeuralCore] built-in composer threw, falling back', err);
       }
 
-      // Path 2: manual composer wired into the engine tick loop
+      // Path 2: manual composer
       try {
-        const renderer = graph.renderer();
-        const scene = graph.scene();
-        const camera = graph.camera();
+        const rendererFn = (graph as unknown as { renderer?: unknown }).renderer;
+        const sceneFn = (graph as unknown as { scene?: unknown }).scene;
+        const cameraFn = (graph as unknown as { camera?: unknown }).camera;
+        const renderer = typeof rendererFn === 'function' ? (rendererFn as () => unknown).call(graph) : null;
+        const scene = typeof sceneFn === 'function' ? (sceneFn as () => unknown).call(graph) : null;
+        const camera = typeof cameraFn === 'function' ? (cameraFn as () => unknown).call(graph) : null;
+        if (verbose) {
+          console.info('[NeuralCore] manual composer probe', { renderer, scene, camera });
+        }
         if (!renderer || !scene || !camera) return false;
-        const composer = new EffectComposer(renderer);
+        const composer = new EffectComposer(renderer as THREE.WebGLRenderer);
         composer.setSize(window.innerWidth, window.innerHeight);
-        composer.addPass(new RenderPass(scene, camera));
+        composer.addPass(new RenderPass(scene as THREE.Scene, camera as THREE.Camera));
         composer.addPass(bloomPass);
         manualComposerRef.current = composer;
-        // Skip the default scene render; let the composer drive it.
-        // We still let three-render-objects update controls/raycaster — it will
-        // overwrite the framebuffer, so we render the composer immediately
-        // afterwards on every animation frame.
         const renderLoop = () => {
           if (manualComposerDisposed.current) return;
           composer.render();
           rafIdRef.current = requestAnimationFrame(renderLoop);
         };
         rafIdRef.current = requestAnimationFrame(renderLoop);
+        console.info('[NeuralCore] bloom installed via manual composer');
         return true;
       } catch (err) {
         console.warn('[NeuralCore] manual composer setup failed', err);
@@ -264,11 +276,37 @@ export function NeuralCore({ onNodeClick }: Props) {
       }
     };
 
-    requestAnimationFrame(() => {
-      if (!installBloom()) {
-        console.warn('[NeuralCore] no composer path succeeded; rendering without bloom');
+    // Expose for ad-hoc debugging in the browser console.
+    (window as unknown as { __cassidyGraph?: unknown }).__cassidyGraph = graph;
+
+    // Synchronous probe right after graph creation
+    try {
+      const r0 = (graph as unknown as { renderer?: () => unknown }).renderer?.();
+      const ppc0 = (graph as unknown as { postProcessingComposer?: () => unknown }).postProcessingComposer?.();
+      console.info('[NeuralCore] sync probe', {
+        renderer: r0 ? (r0 as { constructor: { name: string } }).constructor.name : r0,
+        ppc: ppc0 ? (ppc0 as { constructor: { name: string } }).constructor.name : ppc0,
+      });
+    } catch (e) {
+      console.warn('[NeuralCore] sync probe threw', e);
+    }
+
+    // Poll for up to ~5s waiting for the renderer/composer to come online,
+    // then install bloom. Some 3d-force-graph builds defer their inner
+    // kapsule init by one or more frames.
+    let attempts = 0;
+    const MAX_ATTEMPTS = 300; // ~5s at 60fps
+    const tryInstall = () => {
+      if (manualComposerDisposed.current) return;
+      attempts++;
+      if (installBloom(attempts === 1 || attempts === 60 || attempts === MAX_ATTEMPTS)) return;
+      if (attempts < MAX_ATTEMPTS) {
+        rafIdRef.current = requestAnimationFrame(tryInstall);
+      } else {
+        console.warn('[NeuralCore] no composer path succeeded after', attempts, 'frames; rendering without bloom');
       }
-    });
+    };
+    rafIdRef.current = requestAnimationFrame(tryInstall);
 
     // Auto-orbit when idle
     let angle = 0;
