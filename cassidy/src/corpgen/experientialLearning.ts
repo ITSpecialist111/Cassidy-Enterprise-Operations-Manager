@@ -21,6 +21,7 @@ import { upsertEntity, listEntities, type TableEntity } from '../memory/tableSto
 import { getSharedOpenAI } from '../auth';
 import { logger } from '../logger';
 import type { TrajectoryDemo } from './types';
+import { getAppIndex } from './faissIndex';
 
 const TABLE = 'CorpGenTrajectories';
 /** Azure OpenAI embedding deployment name. Override via env. */
@@ -102,6 +103,13 @@ export async function captureSuccessfulTrajectory(input: {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+  // Incrementally add to FAISS index (avoids full rebuild)
+  if (emb) {
+    try {
+      const idx = await getAppIndex(input.app);
+      await idx.add(demo.demoId, emb);
+    } catch { /* best-effort — index will pick it up on next rebuild */ }
+  }
   return demo;
 }
 
@@ -125,6 +133,27 @@ export async function retrieveSimilarTrajectories(input: {
 
   const queryEmb = await embed(`${input.app}\n${input.taskSummary}`);
 
+  // Try FAISS index first (O(1) approximate search)
+  if (queryEmb) {
+    try {
+      const index = await getAppIndex(input.app);
+      if (index.size() > 0) {
+        const hits = await index.search(queryEmb, topK);
+        if (hits.length > 0) {
+          const candidateMap = new Map(candidates.map((r) => [r.rowKey, r]));
+          const results = hits
+            .map((h) => candidateMap.get(h.demoId))
+            .filter((r): r is DemoRow => r != null)
+            .map(rowToDemo);
+          if (results.length > 0) return results;
+        }
+      }
+    } catch {
+      // Fall through to in-memory cosine scan
+    }
+  }
+
+  // Fallback: in-memory cosine scan + Jaccard
   const scored = candidates.map((row) => {
     let score = 0;
     if (queryEmb && row.embedding) {

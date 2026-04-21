@@ -290,3 +290,119 @@ export interface ArtifactJudgement {
   /** Number of artifacts considered. */
   artifactsConsidered: number;
 }
+
+// ---------------------------------------------------------------------------
+// Agent Harness — reusable agentic execution engine
+// ---------------------------------------------------------------------------
+
+import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat';
+
+/**
+ * Declarative definition of an agent the harness can execute.
+ * Agents are plain objects (not classes) so they can be defined as
+ * module-level constants and shared across invocations.
+ */
+export interface AgentDefinition {
+  /** Unique identifier for this agent type (e.g. 'corpgen-react', 'research', 'cua-planner'). */
+  agentId: string;
+  /** System prompt — either a static string or a builder function. */
+  systemPrompt: string | ((ctx: AgentPromptContext) => string);
+  /** Max ReAct iterations before the harness stops. */
+  maxIterations: number;
+  /**
+   * Tool allowlist. When present, only tools whose function.name appears in
+   * this set are included (subject to the 128-tool cap and app filtering).
+   */
+  toolAllowlist?: Set<string>;
+  /** Static response format for every iteration. */
+  responseFormat?: 'text' | 'json_object';
+  /** Dynamic per-iteration response format (overrides `responseFormat` when set). */
+  responseFormatFn?: (iteration: number, maxIterations: number) => 'text' | 'json_object' | undefined;
+  /** Tool-choice override. Default 'auto'. */
+  toolChoice?: 'auto' | 'none' | 'required';
+  /**
+   * Continuation user-message injected between non-terminal iterations when
+   * `toolChoice === 'none'` (e.g. research sub-agent multi-pass reasoning).
+   */
+  continuationPrompt?: string;
+}
+
+/** Context supplied to a dynamic system-prompt builder. */
+export interface AgentPromptContext {
+  identity?: DigitalEmployeeIdentity;
+  task?: DailyTask;
+  retrieved?: RetrievedContext;
+  /** Arbitrary key-value bag for agent-specific data. */
+  extra: Record<string, unknown>;
+}
+
+/** Configuration for a single `runAgent()` invocation. */
+export interface HarnessRunConfig {
+  /** The agent definition to execute. */
+  agent: AgentDefinition;
+  /** Initial user message(s) that kick off the loop. */
+  userMessages: ChatCompletionMessageParam[];
+  /** All candidate tools (before filtering). */
+  tools: ChatCompletionTool[];
+  /** App hint for per-task tool filtering (CorpGen paper Gap #3). */
+  appHint?: string;
+  /** Prompt context passed to dynamic system-prompt builders. */
+  promptContext?: AgentPromptContext;
+  /** Budget tracker — shared with the day runner. */
+  budget?: HarnessBudget;
+  /** Three-tier tool dispatcher (cognitive → subagent → host). */
+  dispatchTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  /** Lifecycle hooks. */
+  hooks?: HarnessHooks;
+  /** When set, enables adaptive summarisation between iterations. */
+  summarization?: {
+    employeeId: string;
+    taskId: string;
+  };
+}
+
+/** Budget tracker — identical shape to DayBudget. */
+export interface HarnessBudget {
+  startMs: number;
+  maxWallclockMs: number;
+  maxToolCalls: number;
+  toolCallsUsed: number;
+}
+
+/** Lifecycle hooks fired by the harness. All are optional. */
+export interface HarnessHooks {
+  /** Called before each tool execution. May mutate args. */
+  onToolCall?: (name: string, args: Record<string, unknown>) => void | Promise<void>;
+  /** Called after each tool execution. */
+  onToolResult?: (name: string, result: unknown, error?: string, durationMs?: number) => void | Promise<void>;
+  /** Called at the start of each iteration. */
+  onIteration?: (iteration: number, tokenEstimate: number) => void | Promise<void>;
+  /** Called after adaptive summarisation fires. */
+  onSummarize?: (tokensBefore: number, tokensAfter: number) => void | Promise<void>;
+  /** Called when the harness completes (success or failure). */
+  onComplete?: (outcome: HarnessOutcome) => void | Promise<void>;
+}
+
+/** Result of a single `runAgent()` invocation. */
+export interface HarnessOutcome {
+  ok: boolean;
+  result?: string;
+  error?: string;
+  budgetExhausted?: boolean;
+  iterations: number;
+  toolCallsUsed: number;
+}
+
+// ---------------------------------------------------------------------------
+// FAISS Vector Index
+// ---------------------------------------------------------------------------
+
+/** Application-partitioned vector index for experiential trajectory retrieval. */
+export interface VectorIndex {
+  /** Search for top-K nearest neighbors. */
+  search(queryVector: number[], topK: number): Promise<Array<{ demoId: string; score: number }>>;
+  /** Add a vector to the index. */
+  add(demoId: string, vector: number[]): Promise<void>;
+  /** Number of vectors currently indexed. */
+  size(): number;
+}

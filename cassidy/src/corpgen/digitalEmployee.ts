@@ -39,7 +39,7 @@
 // ---------------------------------------------------------------------------
 
 import { ulid } from 'ulid';
-import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat';
+import type { ChatCompletionTool } from 'openai/resources/chat';
 import { getSharedOpenAI } from '../auth';
 import { config as appConfig } from '../featureConfig';
 import { logger } from '../logger';
@@ -68,9 +68,7 @@ import {
   workingReset,
 } from './tieredMemory';
 import {
-  compressIfNeeded,
   classifyTurn,
-  estimateTokens,
 } from './adaptiveSummarizer';
 import {
   retrieveSimilarTrajectories,
@@ -79,6 +77,7 @@ import {
 } from './experientialLearning';
 import { COGNITIVE_TOOL_DEFS, COGNITIVE_HANDLERS } from './cognitiveTools';
 import { SUBAGENT_TOOL_DEFS, SUBAGENT_HANDLERS } from './subAgents';
+import { runAgent } from './agentHarness';
 import type {
   DigitalEmployeeIdentity,
   DailyPlan,
@@ -89,6 +88,7 @@ import type {
   DayRunResult,
   DayStopReason,
   TrajectoryDemo,
+  AgentDefinition,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -403,7 +403,7 @@ async function runCycle(input: CycleInput): Promise<DailyPlan> {
 }
 
 // ---------------------------------------------------------------------------
-// ReAct loop (single attempt)
+// ReAct loop (single attempt) — delegates to the agent harness
 // ---------------------------------------------------------------------------
 
 interface ReactInput {
@@ -416,79 +416,42 @@ interface ReactInput {
 
 interface ReactOutcome { ok: boolean; result?: string; error?: string; budgetExhausted?: boolean }
 
+/** CorpGen main ReAct agent definition — passed to the reusable harness. */
+const CORPGEN_REACT_AGENT: AgentDefinition = {
+  agentId: 'corpgen-react',
+  systemPrompt: '', // dynamically overridden per-cycle
+  maxIterations: MAX_REACT_ITERATIONS,
+  toolChoice: 'auto',
+};
+
 async function runReactLoop(input: ReactInput): Promise<ReactOutcome> {
   const { cycle, identity, executor, budget, demos } = input;
-  const openai = getSharedOpenAI();
 
-  // Azure OpenAI caps a single request at 128 tools. Cognitive + sub-agent
-  // tools are load-bearing for the React loop, so they go first; host tools
-  // (live MCP + static) fill the remainder. Without this slice the request
-  // is rejected with a 400 (or worse, the model returns text-only with no
-  // tool_calls — which is exactly what produced 5 minutes of "thinking" and
-  // zero work in c733afc7).
-  const MAX_TOOLS = 128;
-  const head = [...COGNITIVE_TOOL_DEFS, ...SUBAGENT_TOOL_DEFS];
-  const remaining = Math.max(0, MAX_TOOLS - head.length);
-  const tools: ChatCompletionTool[] = [
-    ...head,
-    ...executor.hostTools().slice(0, remaining),
+  // All candidate tools (cognitive + subagent + host)
+  const allTools: ChatCompletionTool[] = [
+    ...COGNITIVE_TOOL_DEFS,
+    ...SUBAGENT_TOOL_DEFS,
+    ...executor.hostTools(),
   ];
 
-  const messages: ChatCompletionMessageParam[] = [
-    { role: 'system', content: buildSystemPrompt(identity, cycle) },
-    { role: 'user', content: buildTaskPrompt(cycle.task) },
-  ];
+  // Build a cycle-specific agent definition with the dynamic system prompt
+  const agent: AgentDefinition = {
+    ...CORPGEN_REACT_AGENT,
+    systemPrompt: buildSystemPrompt(identity, cycle),
+  };
 
-  for (let i = 0; i < MAX_REACT_ITERATIONS; i++) {
-    if (Date.now() - budget.startMs >= budget.maxWallclockMs) {
-      return { ok: false, error: 'wallclock cap reached', budgetExhausted: true };
-    }
-    if (budget.toolCallsUsed >= budget.maxToolCalls) {
-      return { ok: false, error: 'tool-call cap reached', budgetExhausted: true };
-    }
-    let response;
-    try {
-      response = await openai.chat.completions.create({
-        model: appConfig.openAiDeployment,
-        messages,
-        tools,
-        tool_choice: 'auto',
-      });
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-
-    const msg = response.choices[0]?.message;
-    if (!msg) return { ok: false, error: 'empty response' };
-
-    // Append assistant turn
-    if (msg.content) {
-      pushTurn(cycle, {
-        kind: 'thought',
-        text: msg.content,
-        critical: classifyTurn({ kind: 'thought', text: msg.content }),
-      });
-      recordEvent({ kind: 'llm.thought', label: msg.content.slice(0, 120), correlationId: identity.employeeId, data: { task: cycle.task.taskId, full: msg.content.slice(0, 600) } });
-    }
-    messages.push({
-      role: 'assistant',
-      content: msg.content ?? '',
-      tool_calls: msg.tool_calls,
-    } as ChatCompletionMessageParam);
-
-    // Terminal: assistant produced final answer with no tool calls
-    if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      return { ok: true, result: msg.content ?? '' };
-    }
-
-    // Execute every tool call
-    for (const call of msg.tool_calls) {
-      if (call.type !== 'function') continue;
-      const name = call.function.name;
-      let args: Record<string, unknown> = {};
-      try { args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>; }
-      catch { /* keep empty */ }
-
+  const outcome = await runAgent({
+    agent,
+    userMessages: [{ role: 'user', content: buildTaskPrompt(cycle.task) }],
+    tools: allTools,
+    appHint: cycle.task.app,
+    budget: {
+      startMs: budget.startMs,
+      maxWallclockMs: budget.maxWallclockMs,
+      maxToolCalls: budget.maxToolCalls,
+      toolCallsUsed: budget.toolCallsUsed,
+    },
+    dispatchTool: (name, args) => {
       // Inject experiential demos when invoking the computer-use sub-agent
       // for the same app as the active task (paper §3.6 routing insight).
       if (name === 'cg_computer_use'
@@ -496,65 +459,57 @@ async function runReactLoop(input: ReactInput): Promise<ReactOutcome> {
           && (typeof args.app !== 'string' || args.app === cycle.task.app)) {
         args = { ...args, demos };
       }
-
-      pushTurn(cycle, {
-        kind: 'action',
-        tool: name,
-        text: `${name}(${call.function.arguments?.slice(0, 200) ?? ''})`,
-        critical: true,
-      });
-
-      let toolResult: unknown;
-      let toolError: string | undefined;
-      const toolStart = Date.now();
-      recordEvent({ kind: 'corpgen.tool', label: `${identity.employeeId} ▸ ${name}`, status: 'started', correlationId: identity.employeeId, data: { task: cycle.task.taskId, args: Object.keys(args).join(',') } });
-      try {
-        toolResult = await dispatchTool(name, args, executor);
-      } catch (err) {
-        toolError = err instanceof Error ? err.message : String(err);
-      }
-      budget.toolCallsUsed++;
-      recordEvent({ kind: 'corpgen.tool', label: `${identity.employeeId} ▸ ${name}`, status: toolError ? 'error' : 'ok', durationMs: Date.now() - toolStart, correlationId: identity.employeeId, data: toolError ? { error: toolError } : { ok: true } });
-
-      const observationText = toolError
-        ? `ERROR: ${toolError}`
-        : safeStringify(toolResult);
-
-      pushTurn(cycle, {
-        kind: 'observation',
-        tool: name,
-        text: observationText.slice(0, 4000),
-        critical: classifyTurn({
+      return dispatchTool(name, args, executor);
+    },
+    summarization: {
+      employeeId: identity.employeeId,
+      taskId: cycle.task.taskId,
+    },
+    hooks: {
+      onToolCall: (name, args) => {
+        pushTurn(cycle, {
+          kind: 'action',
+          tool: name,
+          text: `${name}(${JSON.stringify(args).slice(0, 200)})`,
+          critical: true,
+        });
+        recordEvent({ kind: 'corpgen.tool', label: `${identity.employeeId} ▸ ${name}`, status: 'started', correlationId: identity.employeeId, data: { task: cycle.task.taskId, args: Object.keys(args).join(',') } });
+      },
+      onToolResult: (name, _result, error, durationMs) => {
+        const observationText = error
+          ? `ERROR: ${error}`
+          : safeStringify(_result);
+        pushTurn(cycle, {
           kind: 'observation',
           tool: name,
-          text: observationText,
-          isFailure: Boolean(toolError),
-        }),
-      });
+          text: observationText.slice(0, 4000),
+          critical: classifyTurn({
+            kind: 'observation',
+            tool: name,
+            text: observationText,
+            isFailure: Boolean(error),
+          }),
+        });
+        recordEvent({ kind: 'corpgen.tool', label: `${identity.employeeId} ▸ ${name}`, status: error ? 'error' : 'ok', durationMs, correlationId: identity.employeeId, data: error ? { error } : { ok: true } });
+      },
+      onIteration: (_iter, _tokens) => {
+        // LLM thoughts are recorded by the harness itself
+      },
+      onComplete: () => {
+        // Budget sync happens after runAgent returns via outcome.toolCallsUsed
+      },
+    },
+  });
 
-      messages.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: observationText.slice(0, 4000),
-      } as ChatCompletionMessageParam);
-    }
+  // Sync the tool calls consumed by this harness run back to the day budget
+  budget.toolCallsUsed += outcome.toolCallsUsed;
 
-    // Adaptive summarisation between iterations
-    cycle.estimatedTokens = cycle.turns.reduce((acc, t) => acc + estimateTokens(t.text), 0);
-    const compressed = await compressIfNeeded(
-      identity.employeeId,
-      cycle.task.taskId,
-      cycle.turns,
-    );
-    if (compressed.compressed) {
-      cycle.turns = compressed.turns;
-      cycle.estimatedTokens = compressed.tokensAfter;
-      // Replace the message history with a fresh, compressed view
-      replaceHistoryWithSummary(messages, compressed.turns);
-    }
-  }
-
-  return { ok: false, error: 'max ReAct iterations exhausted' };
+  return {
+    ok: outcome.ok,
+    result: outcome.result,
+    error: outcome.error,
+    budgetExhausted: outcome.budgetExhausted,
+  };
 }
 
 function dispatchTool(
@@ -584,23 +539,6 @@ function pushTurn(cycle: CycleContext, partial: Omit<ReActTurn, 'turnIndex' | 'c
 function safeStringify(v: unknown): string {
   if (typeof v === 'string') return v;
   try { return JSON.stringify(v); } catch { return String(v); }
-}
-
-/**
- * After compression, prune the OpenAI message history down to:
- *   [system, user-task, assistant-summary]
- * This is what actually shrinks the prompt sent to the model.
- */
-function replaceHistoryWithSummary(
-  messages: ChatCompletionMessageParam[],
-  turns: ReActTurn[],
-): void {
-  const system = messages[0];
-  const user = messages[1];
-  const summaryText = turns.map((t) => `(${t.kind}) ${t.text}`).join('\n');
-  messages.length = 0;
-  messages.push(system, user);
-  messages.push({ role: 'assistant', content: `[compressed context]\n${summaryText}` });
 }
 
 // ---------------------------------------------------------------------------

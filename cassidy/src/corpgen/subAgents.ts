@@ -26,7 +26,8 @@ import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/reso
 import { getSharedOpenAI } from '../auth';
 import { config as appConfig } from '../featureConfig';
 import { logger } from '../logger';
-import type { TrajectoryDemo } from './types';
+import { runAgent } from './agentHarness';
+import type { TrajectoryDemo, AgentDefinition } from './types';
 
 // ---------------------------------------------------------------------------
 // Research Sub-Agent
@@ -70,35 +71,37 @@ At the END you MUST return a single JSON object only:
   "citations": ["...", "..."]
 }`;
 
+/** Research sub-agent definition — uses the harness with no tools (pure reasoning). */
+const RESEARCH_AGENT: AgentDefinition = {
+  agentId: 'research',
+  systemPrompt: RESEARCH_SYSTEM,
+  maxIterations: 3, // overridden per-call based on depth
+  toolChoice: 'none',
+  continuationPrompt: 'Continue to the next iteration. Refine and converge.',
+  responseFormatFn: (iteration, maxIterations) =>
+    iteration === maxIterations - 1 ? 'json_object' : undefined,
+};
+
 export async function runResearchAgent(req: ResearchRequest): Promise<ResearchReport> {
   const depth: ResearchDepth = req.depth ?? 'medium';
   const iters = DEPTH_ITERS[depth];
-  const openai = getSharedOpenAI();
 
-  // Isolated message array — never returned to the host.
-  const messages: ChatCompletionMessageParam[] = [
-    { role: 'system', content: RESEARCH_SYSTEM },
-    { role: 'user', content: `Query: ${req.query}\nDepth: ${depth}\nSources: ${(req.sources ?? []).join(', ') || '(any)'}` },
-  ];
+  const agent: AgentDefinition = {
+    ...RESEARCH_AGENT,
+    maxIterations: iters,
+  };
 
-  let i = 0;
-  let raw = '';
-  for (; i < iters; i++) {
-    const r = await openai.chat.completions.create({
-      model: appConfig.openAiDeployment,
-      messages,
-      // Force JSON only on the final iteration.
-      response_format: i === iters - 1 ? { type: 'json_object' } : undefined,
-    });
-    const content = r.choices[0]?.message?.content ?? '';
-    messages.push({ role: 'assistant', content });
-    if (i < iters - 1) {
-      messages.push({ role: 'user', content: 'Continue to the next iteration. Refine and converge.' });
-    } else {
-      raw = content;
-    }
-  }
+  const outcome = await runAgent({
+    agent,
+    userMessages: [{
+      role: 'user',
+      content: `Query: ${req.query}\nDepth: ${depth}\nSources: ${(req.sources ?? []).join(', ') || '(any)'}`,
+    }],
+    tools: [], // no tools — pure reasoning
+    dispatchTool: async () => { throw new Error('research agent has no tools'); },
+  });
 
+  const raw = outcome.result ?? '';
   const parsed = safeParseReport(raw);
   return {
     reportId: ulid(),
@@ -107,7 +110,7 @@ export async function runResearchAgent(req: ResearchRequest): Promise<ResearchRe
     findings: parsed.findings,
     conclusion: parsed.conclusion,
     citations: parsed.citations,
-    iterations: i,
+    iterations: outcome.iterations,
   };
 }
 
