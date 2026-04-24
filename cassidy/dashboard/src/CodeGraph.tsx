@@ -35,6 +35,22 @@ interface CodeGraphResponse {
   builtAt: string;
 }
 
+/**
+ * Ephemeral "synapse" — a transient curved arc drawn between two nodes
+ * to visualise an inferred connection between thoughts. Lives ~6s and fades.
+ */
+interface Synapse {
+  a: CodeNode;
+  b: CodeNode;
+  bornAt: number;
+  color: string;
+  /** ms it takes the travelling spark to traverse the curve */
+  travelMs: number;
+}
+
+const SYNAPSE_TTL_MS = 6_000;
+const MAX_SYNAPSES = 80;
+
 interface AgentEvent {
   id: string;
   ts: string;
@@ -60,6 +76,8 @@ export function CodeGraph() {
   const graphRef = useRef<FG | null>(null);
   const hiddenCommsRef = useRef<Set<string>>(new Set());
   const pulseRef = useRef<Map<string, number>>(new Map());
+  const synapsesRef = useRef<Synapse[]>([]);
+  const lastPulsedRef = useRef<{ node: CodeNode; community: string } | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
   const hoverNodeRef = useRef<CodeNode | null>(null);
   const [selected, setSelected] = useState<CodeNode | null>(null);
@@ -98,23 +116,56 @@ export function CodeGraph() {
     return m;
   }, [data]);
 
-  // React to new events → register pulses
+  // React to new events → register pulses + synapses
   useEffect(() => {
     if (!eventsResp?.events?.length || !data) return;
     const fresh = eventsResp.events;
     const now = Date.now();
     for (const ev of fresh) {
       lastEventIdRef.current = ev.id;
-      // Resolve community from module field ("corpgen.day" -> "corpgen")
       const top = ev.module?.split('.')[0] || '';
       const community = moduleToCommunity.get(top);
       if (!community) continue;
-      // Pulse a random handful of nodes in that community
       const matching = data.nodes.filter((n) => n.community === community);
+      if (matching.length === 0) continue;
+      // Pulse a random handful of nodes in that community
       const sample = matching.sort(() => Math.random() - 0.5).slice(0, 6);
       for (const n of sample) pulseRef.current.set(n.id, now);
+
+      const color = colorByCommunity.get(community) || '#9aa5ce';
+
+      // Intra-event synapses: chain pulsed nodes within this thought
+      // ⇒ shows that THIS thought touched these files together.
+      for (let i = 0; i < sample.length - 1; i++) {
+        synapsesRef.current.push({
+          a: sample[i], b: sample[i + 1],
+          bornAt: now + i * 80, // staggered birth → cascading look
+          color,
+          travelMs: 1800 + Math.random() * 800,
+        });
+      }
+
+      // Cross-event synapse: bridge from the last-pulsed node of the
+      // previous thought to this one's first node. Renders as a slow
+      // travelling arc that crosses communities — the "stream of
+      // consciousness" jumping from one part of the brain to another.
+      const prev = lastPulsedRef.current;
+      if (prev && prev.node !== sample[0]) {
+        synapsesRef.current.push({
+          a: prev.node, b: sample[0],
+          bornAt: now,
+          color: blendColors(colorByCommunity.get(prev.community) || color, color),
+          travelMs: 2400 + Math.random() * 1200,
+        });
+      }
+      lastPulsedRef.current = { node: sample[sample.length - 1], community };
     }
-  }, [eventsResp, data, moduleToCommunity]);
+
+    // Cap synapse count to keep render budget sane
+    if (synapsesRef.current.length > MAX_SYNAPSES) {
+      synapsesRef.current = synapsesRef.current.slice(-MAX_SYNAPSES);
+    }
+  }, [eventsResp, data, moduleToCommunity, colorByCommunity]);
 
   // Search highlight
   const searchMatches = useMemo(() => {
@@ -232,6 +283,25 @@ export function CodeGraph() {
     graph.d3Force('charge')?.strength(-22).distanceMax(220);
     graph.d3Force('link')?.distance(18).strength(0.5);
     graph.d3Force('center')?.strength(0.04);
+
+    // Custom overlay pass — synapses (animated arcs between thought nodes).
+    // Rendered AFTER nodes so the glow sits on top.
+    graph.onRenderFramePost?.((ctx: CanvasRenderingContext2D, globalScale: number) => {
+      const now = Date.now();
+      const live: Synapse[] = [];
+      for (const s of synapsesRef.current) {
+        const age = now - s.bornAt;
+        if (age < 0) { live.push(s); continue; }
+        if (age > SYNAPSE_TTL_MS) continue;
+        if (hiddenCommsRef.current.has(s.a.community) || hiddenCommsRef.current.has(s.b.community)) {
+          live.push(s); continue;
+        }
+        if (s.a.x == null || s.b.x == null) { live.push(s); continue; }
+        live.push(s);
+        drawSynapse(ctx, s, age, globalScale);
+      }
+      synapsesRef.current = live;
+    });
 
     graphRef.current = graph;
 
@@ -366,4 +436,89 @@ function hexToRgba(hex: string, a: number): string {
   const g = parseInt(full.slice(2, 4), 16);
   const b = parseInt(full.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  return [
+    parseInt(full.slice(0, 2), 16),
+    parseInt(full.slice(2, 4), 16),
+    parseInt(full.slice(4, 6), 16),
+  ];
+}
+
+function blendColors(a: string, b: string): string {
+  const [r1, g1, b1] = hexToRgb(a);
+  const [r2, g2, b2] = hexToRgb(b);
+  const mix = (x: number, y: number) => Math.round((x + y) / 2).toString(16).padStart(2, '0');
+  return `#${mix(r1, r2)}${mix(g1, g2)}${mix(b1, b2)}`;
+}
+
+/**
+ * Draw a single synapse: a curved bezier arc between two nodes with a
+ * travelling spark and a fading glow. The curve's control point is
+ * perpendicular to the chord — gives the brain-tissue, dendritic look.
+ */
+function drawSynapse(
+  ctx: CanvasRenderingContext2D,
+  s: Synapse,
+  age: number,
+  globalScale: number,
+): void {
+  const ax = s.a.x!, ay = s.a.y!;
+  const bx = s.b.x!, by = s.b.y!;
+  const dx = bx - ax, dy = by - ay;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  if (dist < 0.5) return;
+
+  // Perpendicular control point — curvature scales with distance.
+  const curvature = Math.min(80, dist * 0.35);
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  const cx = mx - (dy / dist) * curvature;
+  const cy = my + (dx / dist) * curvature;
+
+  // Lifecycle: fade in (0–400ms), hold, fade out (last 1.5s).
+  const lifeProgress = age / SYNAPSE_TTL_MS;
+  const fadeIn = Math.min(1, age / 400);
+  const fadeOut = Math.max(0, 1 - Math.max(0, lifeProgress - 0.7) / 0.3);
+  const baseAlpha = fadeIn * fadeOut;
+  if (baseAlpha <= 0.02) return;
+
+  // Outer glow stroke (broader, dimmer)
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.quadraticCurveTo(cx, cy, bx, by);
+  ctx.strokeStyle = hexToRgba(s.color, baseAlpha * 0.18);
+  ctx.lineWidth = 4 / globalScale;
+  ctx.stroke();
+
+  // Inner crisp stroke
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.quadraticCurveTo(cx, cy, bx, by);
+  ctx.strokeStyle = hexToRgba(s.color, baseAlpha * 0.55);
+  ctx.lineWidth = 1 / globalScale;
+  ctx.stroke();
+
+  // Travelling spark — a bright dot moving along the curve. Loops if the
+  // synapse outlives one travel cycle.
+  const t = (age % s.travelMs) / s.travelMs;
+  // Quadratic bezier point at t
+  const px = (1 - t) * (1 - t) * ax + 2 * (1 - t) * t * cx + t * t * bx;
+  const py = (1 - t) * (1 - t) * ay + 2 * (1 - t) * t * cy + t * t * by;
+  const sparkR = 2.2 / globalScale;
+
+  // Spark glow halo
+  ctx.beginPath();
+  ctx.arc(px, py, sparkR * 4, 0, 2 * Math.PI);
+  ctx.fillStyle = hexToRgba(s.color, baseAlpha * 0.35);
+  ctx.fill();
+
+  // Spark core
+  ctx.beginPath();
+  ctx.arc(px, py, sparkR, 0, 2 * Math.PI);
+  ctx.fillStyle = hexToRgba('#ffffff', baseAlpha * 0.95);
+  ctx.fill();
 }
