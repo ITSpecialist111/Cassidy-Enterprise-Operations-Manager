@@ -88,7 +88,14 @@ export function CodeGraph() {
   const { data, error, refetch } = useQuery({
     queryKey: ['codegraph'],
     queryFn: () => fetchJson<CodeGraphResponse>('/api/dashboard/codegraph'),
-    staleTime: 60_000,
+    // The codebase doesn't change while the user is watching it. Disable
+    // background refetching so the camera never gets reset under the user
+    // mid-demo. Manual ↻ button still works via refetch().
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
   });
 
   // Live agent-event polling — when a new event lands, pulse nodes in
@@ -287,13 +294,30 @@ export function CodeGraph() {
         ctx.fillStyle = dimmed ? hexToRgba(color, 0.2) : color;
         ctx.fill();
 
-        // Hover/match label
-        if (isHover || (isMatch && globalScale > 1.5)) {
+        // Labels: always for hover/match, automatically for ALL nodes
+        // once the user zooms in enough that the labels won't overlap.
+        // Threshold tuned so labels appear smoothly as you zoom into a
+        // cluster — perfect for showing one node at a time.
+        const showAutoLabel = globalScale > 1.6;
+        if (isHover || isMatch || showAutoLabel) {
           const fontSize = Math.max(3, 10 / globalScale);
           ctx.font = `${fontSize}px ui-sans-serif, system-ui`;
-          ctx.fillStyle = '#fff';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'top';
+          // Soft dark backing so labels stay readable over synapse glow
+          const textW = ctx.measureText(node.label).width;
+          const padX = 2 / globalScale;
+          const padY = 1 / globalScale;
+          ctx.fillStyle = isHover
+            ? 'rgba(0,0,0,0.85)'
+            : `rgba(0,0,0,${Math.min(0.7, (globalScale - 1.4) * 0.8)})`;
+          ctx.fillRect(
+            node.x! - textW / 2 - padX,
+            node.y! + r + 1.5,
+            textW + padX * 2,
+            fontSize + padY * 2,
+          );
+          ctx.fillStyle = isHover ? '#fff' : `rgba(255,255,255,${Math.min(1, (globalScale - 1.4) * 1.4)})`;
           ctx.fillText(node.label, node.x!, node.y! + r + 2);
         }
       })
@@ -370,9 +394,13 @@ export function CodeGraph() {
   const searchMatchesRef = useRef<Set<string>>(new Set());
   const neighboursRef = useRef<Map<string, string[]>>(new Map());
 
-  // Push data into the graph
+  // Push data into the graph — guard against re-running on the same
+  // payload so the user's zoom level is never reset mid-demo.
+  const loadedBuiltAtRef = useRef<string | null>(null);
   useEffect(() => {
     if (!graphRef.current || !data) return;
+    if (loadedBuiltAtRef.current === data.builtAt) return;
+    loadedBuiltAtRef.current = data.builtAt;
     // Augment nodes with color + radius
     idIndex.current.clear();
     neighboursRef.current.clear();
@@ -381,19 +409,20 @@ export function CodeGraph() {
       n.__r = 1 + Math.sqrt((n.degree || 0)) * 0.9 + Math.log10(Math.max(10, n.size)) * 0.4;
       idIndex.current.set(n.id, n);
     }
-    // Build adjacency list from import edges → drives the synapses.
+    // Build adjacency list from import edges → drives the synapses
+    // AND the telemetry pop-out's connections list.
     for (const e of data.edges) {
       const sId = typeof e.source === 'string' ? e.source : (e.source as CodeNode).id;
       const tId = typeof e.target === 'string' ? e.target : (e.target as CodeNode).id;
       const sArr = neighboursRef.current.get(sId) || [];
-      sArr.push(tId);
+      if (!sArr.includes(tId)) sArr.push(tId);
       neighboursRef.current.set(sId, sArr);
       const tArr = neighboursRef.current.get(tId) || [];
-      tArr.push(sId);
+      if (!tArr.includes(sId)) tArr.push(sId);
       neighboursRef.current.set(tId, tArr);
     }
     graphRef.current.graphData({ nodes: data.nodes, links: data.edges });
-    // Initial fit
+    // ONE-TIME initial fit. Subsequent renders preserve the user's zoom.
     setTimeout(() => graphRef.current?.zoomToFit(800, 80), 800);
   }, [data, colorByCommunity]);
 
@@ -456,14 +485,52 @@ export function CodeGraph() {
           <div className="cg-section-title">NODE INFO</div>
           {!selected ? (
             <div className="cg-muted">Click a node to inspect it</div>
-          ) : (
-            <div className="cg-node-info">
-              <div className="cg-node-label" style={{ color: selected.__color }}>{selected.label}</div>
-              <div className="cg-node-meta">{selected.id}</div>
-              <div className="cg-node-meta">{selected.degree || 0} edges · {selected.size} loc</div>
-              <div className="cg-node-meta">community: <strong>{selected.community}</strong></div>
-            </div>
-          )}
+          ) : (() => {
+            const neighbourIds = neighboursRef.current.get(selected.id) || [];
+            const neighbours = neighbourIds
+              .map((id) => idIndex.current.get(id))
+              .filter((n): n is CodeNode => !!n);
+            const communityLabel = data?.communities.find((c) => c.id === selected.community)?.label || selected.community;
+            const explanation = describeNode(selected, communityLabel, neighbours.length);
+            return (
+              <div className="cg-node-info">
+                <div className="cg-node-label" style={{ color: selected.__color }}>{selected.label}</div>
+                <div className="cg-node-meta">{selected.id}</div>
+                <div className="cg-node-meta">
+                  <span className="cg-comm-dot" style={{ background: selected.__color, marginRight: 6 }} />
+                  {communityLabel}
+                </div>
+                <div className="cg-node-meta">{selected.degree || 0} edges · {selected.size} loc</div>
+                <div className="cg-node-explain">{explanation}</div>
+                <div className="cg-node-conns-title">CONNECTED TO ({neighbours.length})</div>
+                {neighbours.length === 0 ? (
+                  <div className="cg-muted" style={{ fontSize: 11 }}>No imports in or out (utility / leaf module).</div>
+                ) : (
+                  <div className="cg-conns">
+                    {neighbours.slice(0, 24).map((n) => (
+                      <button
+                        key={n.id}
+                        className="cg-conn-row"
+                        title={n.id}
+                        onClick={() => {
+                          setSelected(n);
+                          if (n.x != null && n.y != null) {
+                            graphRef.current?.centerAt(n.x, n.y, 600);
+                          }
+                        }}
+                      >
+                        <span className="cg-comm-dot" style={{ background: n.__color }} />
+                        <span className="cg-conn-label">{n.label}</span>
+                      </button>
+                    ))}
+                    {neighbours.length > 24 && (
+                      <div className="cg-muted" style={{ fontSize: 11, marginTop: 4 }}>+{neighbours.length - 24} more…</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         <div className="cg-section">
@@ -508,6 +575,43 @@ export function CodeGraph() {
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
     </div>
   );
+}
+
+/**
+ * Build a short human-readable explanation for a node based on its
+ * file path, community and degree. Heuristic — no source-reading.
+ */
+function describeNode(node: CodeNode, communityLabel: string, degree: number): string {
+  const id = node.id.toLowerCase();
+  const label = node.label.toLowerCase();
+  const role: string[] = [];
+  if (label.endsWith('.test.ts') || label.endsWith('.test.tsx')) role.push('Test suite');
+  else if (label === 'index.ts' || label === 'agent.ts') role.push('Entrypoint / orchestrator');
+  else if (id.includes('/tools/')) role.push('Agent tool definition');
+  else if (id.includes('/orchestrator/')) role.push('Multi-step orchestrator');
+  else if (id.includes('/intelligence/')) role.push('Reasoning / intelligence module');
+  else if (id.includes('/memory/')) role.push('Memory / persistence layer');
+  else if (id.includes('/proactive/')) role.push('Proactive trigger');
+  else if (id.includes('/reports/')) role.push('Report generator');
+  else if (id.includes('/voice/')) role.push('Voice IO module');
+  else if (id.includes('/meetings/')) role.push('Meeting handler');
+  else if (id.includes('/scheduler/')) role.push('Scheduling module');
+  else if (id.includes('/workqueue/')) role.push('Work-queue handler');
+  else if (id.includes('/autonomous/')) role.push('Autonomous loop');
+  else if (label.includes('logger')) role.push('Logging utility');
+  else if (label.includes('cache')) role.push('Cache layer');
+  else if (label.includes('auth')) role.push('Auth handler');
+  else if (label.includes('telemetry')) role.push('Telemetry sink');
+  else if (label.includes('retry')) role.push('Retry helper');
+  else if (label.includes('analytics')) role.push('Analytics helper');
+  else role.push(`${communityLabel} module`);
+
+  const conn = degree === 0
+    ? 'Standalone — no other source file imports it (utility or leaf).'
+    : degree === 1
+      ? 'Connects to 1 other module.'
+      : `Connects to ${degree} other modules.`;
+  return `${role[0]}. ${conn}`;
 }
 
 function hexToRgba(hex: string, a: number): string {
