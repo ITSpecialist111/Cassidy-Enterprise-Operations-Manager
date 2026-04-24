@@ -341,9 +341,18 @@ export function CodeGraph() {
         graphRef.current?.zoom(2.5, 600);
       })
       .onBackgroundClick(() => setSelected(null))
-      .cooldownTicks(220)
-      .d3AlphaDecay(0.01)
-      .d3VelocityDecay(0.3);
+      // Keep the d3-force engine alive forever so force-graph keeps
+      // calling onRenderFramePost (where our synapses + ants are drawn).
+      // alphaDecay=0 means the simulation never cools below alphaMin,
+      // and very strong velocityDecay (0.97) means nodes barely drift.
+      // Result: continuous 60fps repaints, but the layout stays put
+      // after the initial settle.
+      .cooldownTicks(Infinity)
+      .cooldownTime(Infinity)
+      .warmupTicks(120)
+      .d3AlphaMin(0)
+      .d3AlphaDecay(0)
+      .d3VelocityDecay(0.97);
 
     graph.d3Force('charge')?.strength(-22).distanceMax(220);
     graph.d3Force('link')?.distance(18).strength(0.5);
@@ -370,11 +379,6 @@ export function CodeGraph() {
 
     graphRef.current = graph;
 
-    // Continuous repaint so pulses animate even when forces have settled.
-    let raf = 0;
-    const tick = () => { graph._animationFrameRequested = false; graph.refresh?.(); raf = requestAnimationFrame(tick); };
-    raf = requestAnimationFrame(tick);
-
     const onResize = () => {
       graph.width(containerRef.current?.clientWidth || window.innerWidth);
       graph.height(containerRef.current?.clientHeight || window.innerHeight);
@@ -383,7 +387,6 @@ export function CodeGraph() {
     onResize();
 
     return () => {
-      cancelAnimationFrame(raf);
       window.removeEventListener('resize', onResize);
       graph._destructor?.();
     };
