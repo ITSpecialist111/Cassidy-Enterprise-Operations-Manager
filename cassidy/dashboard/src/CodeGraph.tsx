@@ -240,19 +240,33 @@ export function CodeGraph() {
         const r = isHover ? baseR * 2 : baseR;
         const color = node.__color || '#9aa5ce';
 
-        // Pulse halo (decays over ~1.5s)
+        // Active-element ORB — soft breathing halo around any node that
+        // has fired recently (lasts ~12s, gently pulses while alive).
+        const ORB_TTL_MS = 12_000;
         const pulseTs = pulseRef.current.get(node.id);
         if (pulseTs) {
           const age = Date.now() - pulseTs;
-          if (age < 1500) {
-            const alpha = (1 - age / 1500) * 0.7;
-            const haloR = r + (age / 1500) * 12;
+          if (age < ORB_TTL_MS) {
+            const lifeP = age / ORB_TTL_MS;
+            // Slow breathing oscillation (~2s period)
+            const breathe = 0.5 + 0.5 * Math.sin(age / 320);
+            const baseAlpha = (1 - lifeP) * 0.65;
+            // Outer soft orb (large, very soft)
+            const orbR = r + 6 + breathe * 6;
             ctx.beginPath();
-            ctx.arc(node.x!, node.y!, haloR, 0, 2 * Math.PI);
-            ctx.fillStyle = hexToRgba(color, alpha * 0.4);
+            ctx.arc(node.x!, node.y!, orbR * 1.6, 0, 2 * Math.PI);
+            ctx.fillStyle = hexToRgba(color, baseAlpha * 0.18);
             ctx.fill();
-            ctx.strokeStyle = hexToRgba('#ffffff', alpha);
-            ctx.lineWidth = 1.2 / globalScale;
+            // Mid orb
+            ctx.beginPath();
+            ctx.arc(node.x!, node.y!, orbR, 0, 2 * Math.PI);
+            ctx.fillStyle = hexToRgba(color, baseAlpha * 0.32);
+            ctx.fill();
+            // Crisp ring at the centre dot
+            ctx.beginPath();
+            ctx.arc(node.x!, node.y!, r * 1.6, 0, 2 * Math.PI);
+            ctx.strokeStyle = hexToRgba('#ffffff', baseAlpha * 0.55);
+            ctx.lineWidth = Math.max(0.5, 1.2 / globalScale);
             ctx.stroke();
           } else {
             pulseRef.current.delete(node.id);
@@ -524,9 +538,10 @@ function blendColors(a: string, b: string): string {
 }
 
 /**
- * Draw a single synapse: a curved bezier arc between two nodes with a
- * travelling spark and a fading glow. The curve's control point is
- * perpendicular to the chord — gives the brain-tissue, dendritic look.
+ * Draw a single synapse: a static thin line + 2-3 "ants" (small dots)
+ * walking from a → b along it. The line itself doesn't move-with-the-nodes
+ * because we never store control points; we just draw a straight chord
+ * each frame. The motion you see is the ants, not the curve.
  */
 function drawSynapse(
   ctx: CanvasRenderingContext2D,
@@ -540,13 +555,6 @@ function drawSynapse(
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist < 0.5) return;
 
-  // Perpendicular control point — curvature scales with distance.
-  const curvature = Math.min(120, dist * 0.4);
-  const mx = (ax + bx) / 2;
-  const my = (ay + by) / 2;
-  const cx = mx - (dy / dist) * curvature;
-  const cy = my + (dx / dist) * curvature;
-
   // Lifecycle: fade in (0–500ms), hold, fade out (last 30%).
   const lifeProgress = age / SYNAPSE_TTL_MS;
   const fadeIn = Math.min(1, age / 500);
@@ -554,54 +562,45 @@ function drawSynapse(
   const baseAlpha = fadeIn * fadeOut;
   if (baseAlpha <= 0.02) return;
 
-  // Wide outer glow (the bloom)
+  // Faint trail line — very subtle so the ants are the focal point.
   ctx.beginPath();
   ctx.moveTo(ax, ay);
-  ctx.quadraticCurveTo(cx, cy, bx, by);
-  ctx.strokeStyle = hexToRgba(s.color, baseAlpha * 0.32);
-  ctx.lineWidth = Math.max(3, 8 / globalScale);
+  ctx.lineTo(bx, by);
+  ctx.strokeStyle = hexToRgba(s.color, baseAlpha * 0.18);
+  ctx.lineWidth = Math.max(0.4, 0.8 / globalScale);
   ctx.lineCap = 'round';
   ctx.stroke();
 
-  // Mid-stroke
-  ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.quadraticCurveTo(cx, cy, bx, by);
-  ctx.strokeStyle = hexToRgba(s.color, baseAlpha * 0.65);
-  ctx.lineWidth = Math.max(1.4, 3 / globalScale);
-  ctx.stroke();
+  // 3 ants walking the line at offset phases — gives a "stream" feel.
+  const antR = Math.max(1.2, 2.4 / globalScale);
+  const numAnts = 3;
+  for (let k = 0; k < numAnts; k++) {
+    const phase = k / numAnts;
+    const tRaw = (age / s.travelMs + phase) % 1;
+    // Ease in/out so ants briefly slow at endpoints — feels biological
+    const t = tRaw < 0.5
+      ? 2 * tRaw * tRaw
+      : 1 - Math.pow(-2 * tRaw + 2, 2) / 2;
 
-  // Bright inner core line (white-tinted)
-  ctx.beginPath();
-  ctx.moveTo(ax, ay);
-  ctx.quadraticCurveTo(cx, cy, bx, by);
-  ctx.strokeStyle = hexToRgba('#ffffff', baseAlpha * 0.55);
-  ctx.lineWidth = Math.max(0.6, 1 / globalScale);
-  ctx.stroke();
+    const px = ax + (bx - ax) * t;
+    const py = ay + (by - ay) * t;
 
-  // Travelling spark — a bright dot moving along the curve. Loops if the
-  // synapse outlives one travel cycle.
-  const t = (age % s.travelMs) / s.travelMs;
-  // Quadratic bezier point at t
-  const px = (1 - t) * (1 - t) * ax + 2 * (1 - t) * t * cx + t * t * bx;
-  const py = (1 - t) * (1 - t) * ay + 2 * (1 - t) * t * cy + t * t * by;
-  const sparkR = Math.max(1.5, 3 / globalScale);
+    // Soft outer halo
+    ctx.beginPath();
+    ctx.arc(px, py, antR * 4, 0, 2 * Math.PI);
+    ctx.fillStyle = hexToRgba(s.color, baseAlpha * 0.28);
+    ctx.fill();
 
-  // Outer spark glow
-  ctx.beginPath();
-  ctx.arc(px, py, sparkR * 6, 0, 2 * Math.PI);
-  ctx.fillStyle = hexToRgba(s.color, baseAlpha * 0.4);
-  ctx.fill();
+    // Mid glow
+    ctx.beginPath();
+    ctx.arc(px, py, antR * 2, 0, 2 * Math.PI);
+    ctx.fillStyle = hexToRgba(s.color, baseAlpha * 0.55);
+    ctx.fill();
 
-  // Mid spark glow
-  ctx.beginPath();
-  ctx.arc(px, py, sparkR * 2.5, 0, 2 * Math.PI);
-  ctx.fillStyle = hexToRgba(s.color, baseAlpha * 0.7);
-  ctx.fill();
-
-  // Spark core (white-hot)
-  ctx.beginPath();
-  ctx.arc(px, py, sparkR, 0, 2 * Math.PI);
-  ctx.fillStyle = hexToRgba('#ffffff', baseAlpha);
-  ctx.fill();
+    // White-hot ant body
+    ctx.beginPath();
+    ctx.arc(px, py, antR, 0, 2 * Math.PI);
+    ctx.fillStyle = hexToRgba('#ffffff', baseAlpha * 0.95);
+    ctx.fill();
+  }
 }
