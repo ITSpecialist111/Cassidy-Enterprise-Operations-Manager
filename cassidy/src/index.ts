@@ -578,6 +578,174 @@ dashApi.get('/kanban', async (req, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// Codebase graph — Graphify-style starfield of Cassidy's own source tree.
+// Files = nodes, imports = edges, top-level folder = community.
+// Cached in-memory for 5 min; rebuild on demand via ?refresh=1.
+// ---------------------------------------------------------------------------
+
+interface CodeGraphNode {
+  id: string;        // relative path
+  label: string;     // basename
+  community: string; // top-level folder
+  size: number;      // file LOC (capped)
+  degree?: number;
+}
+interface CodeGraphEdge { source: string; target: string; }
+interface CodeGraphResponse {
+  nodes: CodeGraphNode[];
+  edges: CodeGraphEdge[];
+  communities: Array<{ id: string; label: string; color: string; count: number }>;
+  builtAt: string;
+}
+
+let _codegraphCache: { data: CodeGraphResponse; ts: number } | null = null;
+
+const COMMUNITY_COLORS = [
+  '#7aa2f7', '#9ece6a', '#bb9af7', '#7dcfff', '#e0af68', '#f7768e',
+  '#c0caf5', '#ff9e64', '#73daca', '#f7768e', '#b4f9f8', '#ad8ee6',
+  '#cfc9c2', '#449dab', '#9d7cd8', '#ff007c', '#41a6b5', '#ffb86c',
+];
+
+async function buildCodeGraph(): Promise<CodeGraphResponse> {
+  const fs = await import('node:fs/promises');
+  const path = await import('node:path');
+
+  // Walk cassidy/src — works in dev (./src) and production (./dist already
+  // strips imports; we look at the original .ts files alongside the dist).
+  const candidates = [
+    path.resolve(__dirname, '..', 'src'),  // dist/.. /src — production layout
+    path.resolve(__dirname, 'src'),
+    path.resolve(process.cwd(), 'src'),
+    path.resolve(process.cwd(), 'cassidy', 'src'),
+  ];
+  let srcRoot: string | null = null;
+  for (const c of candidates) {
+    try { const s = await fs.stat(c); if (s.isDirectory()) { srcRoot = c; break; } } catch { /* skip */ }
+  }
+  if (!srcRoot) {
+    return { nodes: [], edges: [], communities: [], builtAt: new Date().toISOString() };
+  }
+
+  // Recursive walk for .ts/.tsx files (skip .test.ts and node_modules)
+  const files: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (e.name === 'node_modules' || e.name === 'dist' || e.name.startsWith('.')) continue;
+        await walk(full);
+      } else if (e.isFile() && /\.(ts|tsx)$/.test(e.name) && !e.name.endsWith('.d.ts')) {
+        files.push(full);
+      }
+    }
+  }
+  await walk(srcRoot);
+
+  const nodes: CodeGraphNode[] = [];
+  const edges: CodeGraphEdge[] = [];
+  const nodeIds = new Set<string>();
+  const importRegex = /(?:^|\n)\s*import\s+(?:[^'"]+\s+from\s+)?['"]([^'"]+)['"]/g;
+
+  for (const abs of files) {
+    const rel = path.relative(srcRoot, abs).replace(/\\/g, '/');
+    const community = rel.includes('/') ? rel.split('/')[0] : 'core';
+    const isTest = /\.test\.tsx?$/.test(rel);
+    if (isTest) continue;
+
+    let content = '';
+    try { content = await fs.readFile(abs, 'utf8'); } catch { continue; }
+    const loc = content.split('\n').length;
+
+    nodes.push({
+      id: rel,
+      label: path.basename(rel, path.extname(rel)),
+      community,
+      size: Math.min(loc, 1500),
+    });
+    nodeIds.add(rel);
+
+    // Collect imports
+    let m: RegExpExecArray | null;
+    importRegex.lastIndex = 0;
+    while ((m = importRegex.exec(content)) !== null) {
+      const spec = m[1];
+      if (!spec.startsWith('.')) continue; // only relative imports
+      const resolved = path.posix.normalize(path.posix.join(path.dirname(rel), spec));
+      // Try common extensions
+      const candidates = [
+        resolved,
+        `${resolved}.ts`,
+        `${resolved}.tsx`,
+        `${resolved}/index.ts`,
+        `${resolved}/index.tsx`,
+      ];
+      const target = candidates.find((c) => nodeIds.has(c)) || candidates.find(() => false);
+      if (target && target !== rel) {
+        edges.push({ source: rel, target });
+      }
+    }
+  }
+
+  // Resolve edges that reference files added later (second pass)
+  const resolvedEdges: CodeGraphEdge[] = [];
+  for (const e of edges) {
+    if (nodeIds.has(e.target)) {
+      resolvedEdges.push(e);
+    } else {
+      // try variants
+      for (const v of [e.target, `${e.target}.ts`, `${e.target}.tsx`, `${e.target}/index.ts`]) {
+        if (nodeIds.has(v)) { resolvedEdges.push({ source: e.source, target: v }); break; }
+      }
+    }
+  }
+
+  // Compute degree
+  const degree = new Map<string, number>();
+  for (const e of resolvedEdges) {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
+  }
+  for (const n of nodes) n.degree = degree.get(n.id) || 0;
+
+  // Build community list with colors
+  const commCounts = new Map<string, number>();
+  nodes.forEach((n) => commCounts.set(n.community, (commCounts.get(n.community) || 0) + 1));
+  const communities = [...commCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, count], i) => ({
+      id,
+      label: id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, ' '),
+      color: COMMUNITY_COLORS[i % COMMUNITY_COLORS.length],
+      count,
+    }));
+
+  return {
+    nodes,
+    edges: resolvedEdges,
+    communities,
+    builtAt: new Date().toISOString(),
+  };
+}
+
+dashApi.get('/codegraph', async (req, res: Response) => {
+  try {
+    const refresh = req.query.refresh === '1';
+    const now = Date.now();
+    if (!refresh && _codegraphCache && now - _codegraphCache.ts < 5 * 60_000) {
+      res.status(200).json(_codegraphCache.data);
+      return;
+    }
+    const data = await buildCodeGraph();
+    _codegraphCache = { data, ts: now };
+    res.status(200).json(data);
+  } catch (err) {
+    logger.error('CodeGraph build failed', { module: 'dashboard.codegraph', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Mindmap — 3D Neural Core graph (agent cognition visualization)
 // ---------------------------------------------------------------------------
 dashApi.get('/mindmap', async (_req, res: Response) => {

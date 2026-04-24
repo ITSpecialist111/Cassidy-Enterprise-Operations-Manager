@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useState, lazy, Suspense } from 'react';
 
 const NeuralCore = lazy(() => import('./NeuralCore').then(m => ({ default: m.NeuralCore })));
+const CodeGraph = lazy(() => import('./CodeGraph').then(m => ({ default: m.CodeGraph })));
 
 interface Snapshot {
   agent: string;
@@ -302,7 +303,7 @@ function AgentMind() {
   );
 }
 
-type Page = 'live' | 'mind' | 'neural' | 'runs' | 'kanban' | 'org';
+type Page = 'live' | 'mind' | 'neural' | 'runs' | 'kanban' | 'org' | 'codegraph';
 
 export function App() {
   const [page, setPage] = useState<Page>('neural');
@@ -328,8 +329,9 @@ export function App() {
           <button className={page === 'kanban' ? 'active' : ''} onClick={() => setPage('kanban')}>📋 Today's Plan</button>
           <button className={page === 'runs' ? 'active' : ''} onClick={() => setPage('runs')}>CorpGen Runs</button>
           <button className={page === 'org' ? 'active' : ''} onClick={() => setPage('org')}>Organisation</button>
+          <button className={page === 'codegraph' ? 'active' : ''} onClick={() => setPage('codegraph')}>✨ Codebase <span className="badge-prototype">prototype</span></button>
         </nav>
-        <main className={`main${page === 'neural' ? ' neural-page' : ''}`}>
+        <main className={`main${page === 'neural' || page === 'codegraph' ? ' neural-page' : ''}`}>
           {page === 'neural' && (
             <>
               <h2>🔮 Neural Core <span style={{ color: 'var(--muted)', fontSize: 13, fontWeight: 400 }}>— Cassidy's cognitive graph</span></h2>
@@ -345,6 +347,16 @@ export function App() {
           {page === 'kanban' && <KanbanBoard />}
           {page === 'runs' && <WorkdayRuns />}
           {page === 'org' && <Organisation snap={snap} />}
+          {page === 'codegraph' && (
+            <>
+              <h2>✨ Codebase <span style={{ color: 'var(--muted)', fontSize: 13, fontWeight: 400 }}>— prototype starfield, pulses while Cassidy thinks</span></h2>
+              <div className="neural-canvas-wrap">
+                <Suspense fallback={<div className="empty" style={{ padding: 40, textAlign: 'center' }}>Loading codebase graph…</div>}>
+                  <CodeGraph />
+                </Suspense>
+              </div>
+            </>
+          )}
         </main>
         <aside className="aside">
           <ActivityBlade />
