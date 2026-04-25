@@ -829,12 +829,43 @@ const VOICE_EDGES: VoiceEdgeSeed[] = [
   { source: 'voice/AzureSpeech',         target: 'voice/SpeechTranslation' },
 ];
 
+// Bridge edges — connect voice nodes back to the real source files that
+// drive them. Source-graph node IDs are relative paths from cassidy/src.
+// Without these, the voice cluster floats free of the agent core.
+const VOICE_BRIDGE_EDGES: VoiceEdgeSeed[] = [
+  { source: 'voice/Session',           target: 'index.ts' },                       // /voice/session endpoint lives here
+  { source: 'voice/Session',           target: 'voice/callManager.ts' },           // ACS/Teams call manager
+  { source: 'voice/RealtimeModel',     target: 'agent.ts' },                       // shared OpenAI client + credential
+  { source: 'voice/RealtimeModel',     target: 'auth.ts' },                        // AAD bearer for AOAI
+  { source: 'voice/ToolCaller',        target: 'agent.ts' },                       // function-calling glue
+  { source: 'voice/ToolCaller',        target: 'tools/mcpToolSetup.ts' },          // tool registration
+  { source: 'voice/MCPServer',         target: 'tools/mcpToolSetup.ts' },          // MCP discovery + OBO
+  { source: 'voice/ConversationMemory',target: 'memory/conversationMemory.ts' },
+  { source: 'voice/ConversationMemory',target: 'memory/longTermMemory.ts' },
+  { source: 'voice/ContextWindow',     target: 'persona.ts' },                     // system prompt source
+  { source: 'voice/ContentSafety',     target: 'inputSanitizer.ts' },
+  { source: 'voice/AppInsights',       target: 'telemetry.ts' },
+  { source: 'voice/AppInsights',       target: 'agentEvents.ts' },                 // recordEvent ring
+  { source: 'voice/Transcriber',       target: 'agentEvents.ts' },                 // transcription events fan out
+  { source: 'voice/AudioGenerator',    target: 'agentEvents.ts' },                 // audio.delta → recordEvent
+  { source: 'voice/BargeInHandler',    target: 'agentEvents.ts' },
+];
+
 function injectVoiceCommunity(graph: CodeGraphResponse): CodeGraphResponse {
-  // Compute degree for voice nodes from voice edges
+  const nodeIds = new Set(graph.nodes.map((n) => n.id));
+  // Compute degree for voice nodes from voice edges (intra + bridge that resolves)
   const degree = new Map<string, number>();
   for (const e of VOICE_EDGES) {
     degree.set(e.source, (degree.get(e.source) || 0) + 1);
     degree.set(e.target, (degree.get(e.target) || 0) + 1);
+  }
+  // Only keep bridge edges whose target source-file actually exists in the graph
+  const bridges = VOICE_BRIDGE_EDGES.filter((e) => nodeIds.has(e.target));
+  for (const e of bridges) {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    // Bump degree of the source-file node too so it sizes up a bit when wired
+    const targetNode = graph.nodes.find((n) => n.id === e.target);
+    if (targetNode) targetNode.degree = (targetNode.degree || 0) + 1;
   }
   const voiceNodes: CodeGraphNode[] = VOICE_NODES.map((n) => ({
     id: n.id,
@@ -851,7 +882,7 @@ function injectVoiceCommunity(graph: CodeGraphResponse): CodeGraphResponse {
   };
   return {
     nodes: [...graph.nodes, ...voiceNodes],
-    edges: [...graph.edges, ...VOICE_EDGES],
+    edges: [...graph.edges, ...VOICE_EDGES, ...bridges],
     communities: [...graph.communities, voiceCommunity],
     builtAt: graph.builtAt,
   };
