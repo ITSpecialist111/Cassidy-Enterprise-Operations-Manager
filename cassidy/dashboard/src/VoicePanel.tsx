@@ -224,7 +224,7 @@ export function VoicePanel() {
         return;
       }
       setInviteState('sent');
-      setInviteMsg('Check Teams — message sent to your chat with Cassidy.');
+      setInviteMsg(`Check Teams — message sent to your chat with Cassidy${body.resolvedHow ? ` (resolved via ${body.resolvedHow})` : ''}.`);
     } catch (e) {
       setInviteState('error');
       setInviteMsg(String(e));

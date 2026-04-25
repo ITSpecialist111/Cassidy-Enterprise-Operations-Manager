@@ -1045,7 +1045,7 @@ dashApi.post('/voice/event', (req, res: Response) => {
 dashApi.post('/voice/invite', async (req, res: Response) => {
   try {
     const principal = (req as express.Request & { easyAuthPrincipal?: { oid?: string; name?: string; email?: string } }).easyAuthPrincipal;
-    if (!principal?.oid) {
+    if (!principal?.oid && !principal?.email) {
       res.status(401).json({ error: 'No principal' });
       return;
     }
@@ -1053,6 +1053,48 @@ dashApi.post('/voice/invite', async (req, res: Response) => {
     const link = `${base}/dashboard/?voice=1`;
 
     const { sendDirectMessage } = await import('./proactive/proactiveEngine');
+    const { getStoredConversationRef, getUserByEmail, getAllActiveUsers } = await import('./proactive/userRegistry');
+
+    // Resolve the Teams user. Easy Auth gives us AAD oid + email, but the
+    // registry is keyed by Teams' from.id (e.g. "29:..."), so we have to
+    // resolve via email or scan, then dispatch with the Teams userId.
+    let teamsUserId: string | null = null;
+    let resolvedHow = '';
+    if (principal.email) {
+      const byEmail = await getUserByEmail(principal.email);
+      if (byEmail) { teamsUserId = byEmail.rowKey; resolvedHow = 'email'; }
+    }
+    if (!teamsUserId && principal.oid) {
+      // Fallback 1: direct lookup by oid (works if registry happens to be oid-keyed)
+      const direct = await getStoredConversationRef(principal.oid);
+      if (direct) { teamsUserId = principal.oid; resolvedHow = 'oid-direct'; }
+    }
+    if (!teamsUserId && (principal.name || principal.email)) {
+      // Fallback 2: scan all users for a name match (small org → cheap)
+      const all = await getAllActiveUsers();
+      const needle = (principal.name || principal.email || '').toLowerCase();
+      const hit = all.find((u) =>
+        u.displayName?.toLowerCase() === needle ||
+        u.email?.toLowerCase() === (principal.email || '').toLowerCase(),
+      );
+      if (hit) { teamsUserId = hit.rowKey; resolvedHow = 'name-scan'; }
+    }
+
+    if (!teamsUserId) {
+      const all = await getAllActiveUsers();
+      logger.warn('Voice invite — could not resolve Teams user', {
+        module: 'voice.invite',
+        principal: { oid: principal.oid, email: principal.email, name: principal.name },
+        registeredUsers: all.length,
+        knownEmails: all.map((u) => u.email).filter(Boolean).slice(0, 10),
+      });
+      res.status(409).json({
+        error: 'Teams identity not registered. Send Cassidy any message in Teams first to register your conversation reference, then try again.',
+        registeredUserCount: all.length,
+      });
+      return;
+    }
+
     const greeting = principal.name?.split(' ')[0] || 'there';
     const text = [
       `🎙️ **Hey ${greeting} — I'm ready to talk.**`,
@@ -1064,19 +1106,19 @@ dashApi.post('/voice/invite', async (req, res: Response) => {
       `_While we're talking you'll see the voice synapses light up live on the Codebase tab._`,
     ].join('\n');
 
-    const result = await sendDirectMessage(principal.oid, text);
+    const result = await sendDirectMessage(teamsUserId, text);
     if (!result.ok) {
-      res.status(409).json({ error: result.reason || 'Failed to send Teams message' });
+      res.status(409).json({ error: result.reason || 'Failed to send Teams message', resolvedHow, teamsUserId });
       return;
     }
     recordEvent({
       kind: 'proactive.tick',
-      label: `📞 Voice invite sent to ${principal.name || principal.email || principal.oid}`,
+      label: `📞 Voice invite sent to ${principal.name || principal.email || teamsUserId}`,
       status: 'ok',
-      data: { module: 'voice.invite', link },
+      data: { module: 'voice.invite', link, resolvedHow },
       correlationId: principal.oid,
     });
-    res.status(200).json({ ok: true, link });
+    res.status(200).json({ ok: true, link, resolvedHow });
   } catch (err) {
     logger.error('Voice invite failed', { module: 'voice.invite', error: String(err) });
     res.status(500).json({ error: String(err) });
