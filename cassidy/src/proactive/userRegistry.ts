@@ -30,7 +30,8 @@ export interface NotificationPrefs {
 
 export interface UserProfile {
   partitionKey: string;
-  rowKey: string;             // userId from activity.from.id
+  rowKey: string;             // userId from activity.from.id (Teams 29:...)
+  aadObjectId?: string;       // AAD oid — matches Easy Auth principal.oid
   displayName: string;
   email: string;
   timezone: string;
@@ -61,16 +62,18 @@ export async function registerUser(context: TurnContext): Promise<void> {
 
   const userId = sanitiseRowKey(activity.from.id);
   const ref = activity.getConversationReference();
+  const aadObjectId = (activity.from as { aadObjectId?: string }).aadObjectId;
   const now = new Date().toISOString();
 
   const existing = await getEntity<UserProfile>(TABLE, PARTITION, userId);
 
   if (existing) {
-    // Update conversation reference and last interaction
+    // Update conversation reference and last interaction (and backfill aadObjectId)
     await upsertEntity(TABLE, {
       ...existing,
       conversationRef: JSON.stringify(ref),
       displayName: activity.from.name ?? existing.displayName,
+      aadObjectId: aadObjectId ?? existing.aadObjectId,
       lastInteraction: now,
       interactionCount: (existing.interactionCount ?? 0) + 1,
     });
@@ -79,6 +82,7 @@ export async function registerUser(context: TurnContext): Promise<void> {
     const profile: UserProfile = {
       partitionKey: PARTITION,
       rowKey: userId,
+      aadObjectId,
       displayName: activity.from.name ?? 'Unknown',
       email: '', // Will be populated via Graph findUser on first enrichment
       timezone: process.env.ORG_TIMEZONE ?? 'AEST',
@@ -90,7 +94,7 @@ export async function registerUser(context: TurnContext): Promise<void> {
       interactionCount: 1,
     };
     await upsertEntity(TABLE, profile);
-    console.log(`[UserRegistry] New user registered: ${profile.displayName} (${userId})`);
+    console.log(`[UserRegistry] New user registered: ${profile.displayName} (${userId}, oid=${aadObjectId ?? 'none'})`);
   }
 }
 

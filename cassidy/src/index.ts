@@ -1056,41 +1056,59 @@ dashApi.post('/voice/invite', async (req, res: Response) => {
     const { getStoredConversationRef, getUserByEmail, getAllActiveUsers } = await import('./proactive/userRegistry');
 
     // Resolve the Teams user. Easy Auth gives us AAD oid + email, but the
-    // registry is keyed by Teams' from.id (e.g. "29:..."), so we have to
-    // resolve via email or scan, then dispatch with the Teams userId.
+    // registry is keyed by Teams from.id ("29:..."), so we have to resolve
+    // via aadObjectId (preferred), email, then displayName.
     let teamsUserId: string | null = null;
     let resolvedHow = '';
-    if (principal.email) {
+    const all = await getAllActiveUsers();
+
+    if (principal.oid) {
+      const byOid = all.find((u) => u.aadObjectId && u.aadObjectId === principal.oid);
+      if (byOid) { teamsUserId = byOid.rowKey; resolvedHow = 'aadObjectId'; }
+    }
+    if (!teamsUserId && principal.email) {
       const byEmail = await getUserByEmail(principal.email);
       if (byEmail) { teamsUserId = byEmail.rowKey; resolvedHow = 'email'; }
     }
     if (!teamsUserId && principal.oid) {
-      // Fallback 1: direct lookup by oid (works if registry happens to be oid-keyed)
+      // Legacy fallback: maybe registry is oid-keyed (older deployments)
       const direct = await getStoredConversationRef(principal.oid);
       if (direct) { teamsUserId = principal.oid; resolvedHow = 'oid-direct'; }
     }
     if (!teamsUserId && (principal.name || principal.email)) {
-      // Fallback 2: scan all users for a name match (small org → cheap)
-      const all = await getAllActiveUsers();
-      const needle = (principal.name || principal.email || '').toLowerCase();
-      const hit = all.find((u) =>
-        u.displayName?.toLowerCase() === needle ||
-        u.email?.toLowerCase() === (principal.email || '').toLowerCase(),
-      );
+      const needleName = (principal.name || '').toLowerCase().trim();
+      const needleEmail = (principal.email || '').toLowerCase().trim();
+      const hit = all.find((u) => {
+        const dn = (u.displayName || '').toLowerCase();
+        const em = (u.email || '').toLowerCase();
+        if (needleEmail && em && em === needleEmail) return true;
+        if (needleName && dn && (dn === needleName || dn.includes(needleName) || needleName.includes(dn))) return true;
+        return false;
+      });
       if (hit) { teamsUserId = hit.rowKey; resolvedHow = 'name-scan'; }
+    }
+    // Last-resort: if there's only ONE registered user, use them.
+    if (!teamsUserId && all.length === 1) {
+      teamsUserId = all[0].rowKey;
+      resolvedHow = 'single-user-fallback';
     }
 
     if (!teamsUserId) {
-      const all = await getAllActiveUsers();
       logger.warn('Voice invite — could not resolve Teams user', {
         module: 'voice.invite',
         principal: { oid: principal.oid, email: principal.email, name: principal.name },
         registeredUsers: all.length,
-        knownEmails: all.map((u) => u.email).filter(Boolean).slice(0, 10),
       });
       res.status(409).json({
         error: 'Teams identity not registered. Send Cassidy any message in Teams first to register your conversation reference, then try again.',
+        principal: { oid: principal.oid, email: principal.email, name: principal.name },
         registeredUserCount: all.length,
+        registeredUsers: all.map((u) => ({
+          displayName: u.displayName,
+          email: u.email || '(none)',
+          aadObjectId: u.aadObjectId || '(none — DM Cassidy once more to backfill)',
+          rowKey: u.rowKey.slice(0, 28),
+        })),
       });
       return;
     }

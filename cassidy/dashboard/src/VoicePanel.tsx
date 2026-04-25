@@ -220,7 +220,19 @@ export function VoicePanel() {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setInviteState('error');
-        setInviteMsg(body.error || `HTTP ${res.status}`);
+        let msg = body.error || `HTTP ${res.status}`;
+        if (body.principal) {
+          msg += `\n\nSigned in as: ${body.principal.name || body.principal.email || body.principal.oid}`;
+        }
+        if (body.registeredUsers && body.registeredUsers.length > 0) {
+          msg += `\n\nRegistered Teams users (${body.registeredUserCount}):\n` +
+            body.registeredUsers.map((u: { displayName: string; email: string; aadObjectId: string }) =>
+              `• ${u.displayName} — ${u.email} — oid: ${u.aadObjectId}`,
+            ).join('\n');
+        } else if (body.registeredUserCount === 0) {
+          msg += '\n\nNo users in registry yet — DM Cassidy from Teams as the user you want to call.';
+        }
+        setInviteMsg(msg);
         return;
       }
       setInviteState('sent');
@@ -279,7 +291,7 @@ export function VoicePanel() {
       </div>
 
       {inviteMsg && (
-        <div className={inviteState === 'error' ? 'error' : 'voice-info'} style={{ marginBottom: 12 }}>
+        <div className={inviteState === 'error' ? 'error' : 'voice-info'} style={{ marginBottom: 12, whiteSpace: 'pre-wrap', fontFamily: inviteState === 'error' ? 'var(--fontMono)' : undefined, fontSize: inviteState === 'error' ? 12 : undefined }}>
           {inviteMsg}
         </div>
       )}
