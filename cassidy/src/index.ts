@@ -22,6 +22,12 @@ import { getAllConversationRefs } from './proactive/userRegistry';
 import { handleTranscriptWebhook, postToMeetingChat } from './meetings/meetingMonitor';
 import { handleCallNotification, getActiveCall } from './voice/callManager';
 import { startVoiceConversation, endVoiceConversation } from './voice/voiceAgent';
+import {
+  initiateOutboundTeamsCall,
+  handleAcsEvent,
+  attachAcsMediaWebSocket,
+  isAcsConfigured,
+} from './voice/acsBridge';
 import { seedDefaultAgents } from './orchestrator/agentRegistry';
 import { config, features, logFeatureStatus } from './featureConfig';
 import { initTelemetry, flushTelemetry } from './telemetry';
@@ -1113,6 +1119,41 @@ dashApi.post('/voice/invite', async (req, res: Response) => {
       return;
     }
 
+    // ---- Primary path: real Teams VOIP call via ACS Call Automation ----
+    // This rings the user's Teams app like a person calling. Foundry Realtime
+    // bridges over the ACS media WebSocket so they can talk to Cassidy live.
+    const resolvedUser = all.find((u) => u.rowKey === teamsUserId);
+    const callTargetOid = resolvedUser?.aadObjectId || principal.oid;
+    if (isAcsConfigured() && callTargetOid) {
+      try {
+        const callResult = await initiateOutboundTeamsCall({
+          teamsUserAadOid: callTargetOid,
+          requestedBy: principal.name || resolvedUser?.displayName,
+        });
+        recordEvent({
+          kind: 'proactive.tick',
+          label: `📞 Cassidy ringing ${resolvedUser?.displayName || principal.name || 'user'} on Teams`,
+          status: 'ok',
+          data: { module: 'voice.acs', callConnectionId: callResult.callConnectionId, resolvedHow },
+          correlationId: principal.oid,
+        });
+        res.status(200).json({
+          ok: true,
+          mode: 'acs-teams-call',
+          callConnectionId: callResult.callConnectionId,
+          resolvedHow,
+          target: { displayName: resolvedUser?.displayName, aadObjectId: callTargetOid },
+        });
+        return;
+      } catch (acsErr) {
+        logger.warn('ACS outbound call failed — falling back to Teams DM', {
+          module: 'voice.acs',
+          error: String(acsErr),
+        });
+        // Fall through to DM-with-deep-link fallback below
+      }
+    }
+
     const greeting = principal.name?.split(' ')[0] || 'there';
     const text = [
       `🎙️ **Hey ${greeting} — I'm ready to talk.**`,
@@ -1379,6 +1420,21 @@ server.post('/api/messages', (req: Request, res: Response) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// ACS Call Automation callback endpoint — Cloud Events array of CallConnected,
+// CallDisconnected, etc. ACS POSTs these to the callbackUri we registered when
+// placing the outbound call.
+// ---------------------------------------------------------------------------
+server.post('/api/calls/acs-events', (req: express.Request, res: Response) => {
+  try {
+    handleAcsEvent(req.body);
+    res.status(200).end();
+  } catch (err: unknown) {
+    logger.error('ACS event handler failed', { module: 'voice.acs', error: String(err) });
+    res.status(500).end();
+  }
+});
+
 // Agent-to-Agent (A2A) messages endpoint
 server.post('/api/agent-messages', (req: Request, res: Response) => {
   logger.info('A2A message received', { module: 'a2a', agentId: String(req.headers['x-agent-id'] || 'unknown-agent') });
@@ -1395,6 +1451,14 @@ const host = process.env.HOST ?? (isDevelopment ? 'localhost' : '0.0.0.0');
 const httpServer = server.listen(port, host, () => {
   logger.info('Cassidy listening', { module: 'startup', host, port });
   logger.info('Health check available', { module: 'startup', url: `http://${host}:${port}/api/health` });
+
+  // Attach the ACS Call Automation media WebSocket on /api/calls/acs-media
+  // (full-duplex PCM16 24kHz <-> Foundry Realtime). No-op if ACS isn't configured.
+  if (isAcsConfigured()) {
+    attachAcsMediaWebSocket(httpServer);
+  } else {
+    logger.info('ACS not configured — outbound Teams calls disabled', { module: 'voice.acs' });
+  }
 
   // Wire adapter into the proactive notifier for out-of-turn messaging (legacy)
   const adapter = agentApplication.adapter as CloudAdapter;

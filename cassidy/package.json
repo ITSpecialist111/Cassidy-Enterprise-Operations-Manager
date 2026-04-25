@@ -14,6 +14,8 @@
     "lint": "eslint src --max-warnings 0"
   },
   "dependencies": {
+    "@azure/communication-call-automation": "^1.5.1",
+    "@azure/communication-common": "^2.4.0",
     "@azure/data-tables": "^13.3.2",
     "@azure/identity": "^4.13.0",
     "@microsoft/agents-a365-tooling": "^0.1.0-preview.119",
@@ -28,6 +30,7 @@
     "openai": "^6.29.0",
     "typescript": "^5.4.5",
     "ulid": "^3.0.2",
+    "ws": "^8.20.0",
     "zod": "^3.25.0"
   },
   "optionalDependencies": {
@@ -36,6 +39,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.1",
     "eslint": "^10.1.0",
     "nodemon": "*",
