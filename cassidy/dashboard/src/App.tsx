@@ -3,6 +3,7 @@ import { useState, lazy, Suspense } from 'react';
 
 const NeuralCore = lazy(() => import('./NeuralCore').then(m => ({ default: m.NeuralCore })));
 const CodeGraph = lazy(() => import('./CodeGraph').then(m => ({ default: m.CodeGraph })));
+const VoicePanel = lazy(() => import('./VoicePanel').then(m => ({ default: m.VoicePanel })));
 
 interface Snapshot {
   agent: string;
@@ -303,10 +304,14 @@ function AgentMind() {
   );
 }
 
-type Page = 'live' | 'mind' | 'neural' | 'runs' | 'kanban' | 'org' | 'codegraph';
+type Page = 'live' | 'mind' | 'neural' | 'runs' | 'kanban' | 'org' | 'codegraph' | 'voice';
 
 export function App() {
-  const [page, setPage] = useState<Page>('neural');
+  const initialPage: Page = (() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('voice') === '1') return 'voice';
+    return 'neural';
+  })();
+  const [page, setPage] = useState<Page>(initialPage);
   const { data: snap, error } = useQuery({
     queryKey: ['snapshot'],
     queryFn: () => fetchJson<Snapshot>('/api/dashboard/snapshot'),
@@ -330,6 +335,7 @@ export function App() {
           <button className={page === 'runs' ? 'active' : ''} onClick={() => setPage('runs')}>CorpGen Runs</button>
           <button className={page === 'org' ? 'active' : ''} onClick={() => setPage('org')}>Organisation</button>
           <button className={page === 'codegraph' ? 'active' : ''} onClick={() => setPage('codegraph')}>✨ Codebase <span className="badge-prototype">prototype</span></button>
+          <button className={page === 'voice' ? 'active' : ''} onClick={() => setPage('voice')}>🎙️ Voice <span className="badge-prototype">live</span></button>
         </nav>
         <main className={`main${page === 'neural' || page === 'codegraph' ? ' neural-page' : ''}`}>
           {page === 'neural' && (
@@ -356,6 +362,11 @@ export function App() {
                 </Suspense>
               </div>
             </>
+          )}
+          {page === 'voice' && (
+            <Suspense fallback={<div className="empty" style={{ padding: 40, textAlign: 'center' }}>Loading voice console…</div>}>
+              <VoicePanel />
+            </Suspense>
           )}
         </main>
         <aside className="aside">

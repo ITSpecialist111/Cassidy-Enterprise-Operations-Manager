@@ -35,7 +35,7 @@ import { getActiveSubscriptions, startAutoRenewal, stopAutoRenewal } from './web
 import { requireEasyAuth } from './easyAuth';
 import { getRecentActivity } from './logger';
 import { listAgents } from './orchestrator/agentRegistry';
-import { getRecentEvents, getEventStats, type AgentEventKind } from './agentEvents';
+import { getRecentEvents, getEventStats, recordEvent, type AgentEventKind } from './agentEvents';
 import path from 'path';
 
 // Initialise Application Insights early (before route handlers)
@@ -728,6 +728,135 @@ async function buildCodeGraph(): Promise<CodeGraphResponse> {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Voice community — synthetic nodes representing Microsoft Foundry Realtime
+// voice architecture. Wired alongside the real source-file graph so when
+// Cassidy is in a live voice session, ant-trails fire across documented
+// Realtime API events (session.created, input_audio_buffer.append,
+// response.audio.delta, function_call_arguments.done, etc.).
+//
+// All entities are sourced from Microsoft Learn:
+//   https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio
+//   https://learn.microsoft.com/en-us/azure/ai-services/speech-service/*
+// ---------------------------------------------------------------------------
+
+interface VoiceNodeSeed {
+  id: string;
+  label: string;
+  size: number; // synthetic LOC for sizing
+  degree?: number;
+}
+interface VoiceEdgeSeed { source: string; target: string }
+
+const VOICE_NODES: VoiceNodeSeed[] = [
+  // Session layer
+  { id: 'voice/Session',              label: 'Session',              size: 600 },
+  { id: 'voice/RealtimeModel',        label: 'gpt-realtime-mini',    size: 800 },
+  { id: 'voice/WebRTCTransport',      label: 'WebRTC',               size: 300 },
+  { id: 'voice/WebSocketTransport',   label: 'WebSocket',            size: 300 },
+  { id: 'voice/SIPTransport',         label: 'SIP / Telephony',      size: 250 },
+  // Input pipeline
+  { id: 'voice/Microphone',           label: 'Microphone',           size: 120 },
+  { id: 'voice/InputAudioBuffer',     label: 'Input Audio Buffer',   size: 200 },
+  { id: 'voice/VAD',                  label: 'VAD',                  size: 250 },
+  { id: 'voice/SemanticVAD',          label: 'Semantic VAD',         size: 200 },
+  { id: 'voice/Transcriber',          label: 'STT (whisper-1)',      size: 350 },
+  { id: 'voice/LanguageDetect',       label: 'Language detect',      size: 150 },
+  { id: 'voice/BargeInHandler',       label: 'Barge-in',             size: 180 },
+  // Reasoning / orchestration
+  { id: 'voice/ContextWindow',        label: 'Context window',       size: 300 },
+  { id: 'voice/ToolCaller',           label: 'Function calling',     size: 400 },
+  { id: 'voice/MCPServer',            label: 'MCP servers',          size: 350 },
+  { id: 'voice/ContentSafety',        label: 'Content safety',       size: 250 },
+  { id: 'voice/OutOfBandResponse',    label: 'Out-of-band response', size: 180 },
+  // Output pipeline
+  { id: 'voice/AudioGenerator',       label: 'Audio generator',      size: 500 },
+  { id: 'voice/AudioDeltaStream',     label: 'response.audio.delta', size: 250 },
+  { id: 'voice/TextTranscriptStream', label: 'audio_transcript',     size: 220 },
+  { id: 'voice/Speaker',              label: 'Speaker',              size: 120 },
+  { id: 'voice/VisemeStream',         label: 'Visemes (22 IPA)',     size: 200 },
+  { id: 'voice/SSML',                 label: 'SSML',                 size: 180 },
+  { id: 'voice/CustomNeuralVoice',    label: 'Custom Neural Voice',  size: 220 },
+  { id: 'voice/ResponseInterruptor',  label: 'response.cancel',      size: 150 },
+  // Conversation state
+  { id: 'voice/ConversationMemory',   label: 'Conversation items',   size: 350 },
+  { id: 'voice/TruncationPoint',      label: 'item.truncate',        size: 150 },
+  // External services
+  { id: 'voice/AzureSpeech',          label: 'Azure Speech',         size: 400 },
+  { id: 'voice/SpeechTranslation',    label: 'Speech translation',   size: 280 },
+  { id: 'voice/AppInsights',          label: 'OTel / App Insights',  size: 240 },
+];
+
+// Edges: every line is a documented event/dataflow path.
+const VOICE_EDGES: VoiceEdgeSeed[] = [
+  // Session connects transports
+  { source: 'voice/WebRTCTransport',     target: 'voice/Session' },
+  { source: 'voice/WebSocketTransport',  target: 'voice/Session' },
+  { source: 'voice/SIPTransport',        target: 'voice/Session' },
+  { source: 'voice/Session',             target: 'voice/RealtimeModel' },
+  { source: 'voice/Session',             target: 'voice/AppInsights' },
+  // Input pipeline (mic → VAD → transcriber → model)
+  { source: 'voice/Microphone',          target: 'voice/InputAudioBuffer' },
+  { source: 'voice/InputAudioBuffer',    target: 'voice/VAD' },
+  { source: 'voice/InputAudioBuffer',    target: 'voice/SemanticVAD' },
+  { source: 'voice/VAD',                 target: 'voice/RealtimeModel' },
+  { source: 'voice/SemanticVAD',         target: 'voice/RealtimeModel' },
+  { source: 'voice/InputAudioBuffer',    target: 'voice/Transcriber' },
+  { source: 'voice/Transcriber',         target: 'voice/LanguageDetect' },
+  { source: 'voice/Transcriber',         target: 'voice/ConversationMemory' },
+  { source: 'voice/BargeInHandler',      target: 'voice/ResponseInterruptor' },
+  // Reasoning
+  { source: 'voice/RealtimeModel',       target: 'voice/ContextWindow' },
+  { source: 'voice/ContextWindow',       target: 'voice/ConversationMemory' },
+  { source: 'voice/RealtimeModel',       target: 'voice/ToolCaller' },
+  { source: 'voice/ToolCaller',          target: 'voice/MCPServer' },
+  { source: 'voice/RealtimeModel',       target: 'voice/ContentSafety' },
+  { source: 'voice/RealtimeModel',       target: 'voice/OutOfBandResponse' },
+  // Output (model → audio + transcript + visemes → speaker)
+  { source: 'voice/RealtimeModel',       target: 'voice/AudioGenerator' },
+  { source: 'voice/AudioGenerator',      target: 'voice/AudioDeltaStream' },
+  { source: 'voice/AudioGenerator',      target: 'voice/TextTranscriptStream' },
+  { source: 'voice/AudioGenerator',      target: 'voice/VisemeStream' },
+  { source: 'voice/AudioGenerator',      target: 'voice/SSML' },
+  { source: 'voice/AudioGenerator',      target: 'voice/CustomNeuralVoice' },
+  { source: 'voice/AudioDeltaStream',    target: 'voice/Speaker' },
+  // Truncation flow
+  { source: 'voice/ResponseInterruptor', target: 'voice/AudioGenerator' },
+  { source: 'voice/ResponseInterruptor', target: 'voice/TruncationPoint' },
+  { source: 'voice/TruncationPoint',     target: 'voice/ConversationMemory' },
+  // External services
+  { source: 'voice/RealtimeModel',       target: 'voice/AzureSpeech' },
+  { source: 'voice/AzureSpeech',         target: 'voice/SpeechTranslation' },
+];
+
+function injectVoiceCommunity(graph: CodeGraphResponse): CodeGraphResponse {
+  // Compute degree for voice nodes from voice edges
+  const degree = new Map<string, number>();
+  for (const e of VOICE_EDGES) {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
+  }
+  const voiceNodes: CodeGraphNode[] = VOICE_NODES.map((n) => ({
+    id: n.id,
+    label: n.label,
+    community: 'voice',
+    size: n.size,
+    degree: degree.get(n.id) || 0,
+  }));
+  const voiceCommunity = {
+    id: 'voice',
+    label: '🎙️ Voice (Foundry Realtime)',
+    color: '#ff79c6',
+    count: voiceNodes.length,
+  };
+  return {
+    nodes: [...graph.nodes, ...voiceNodes],
+    edges: [...graph.edges, ...VOICE_EDGES],
+    communities: [...graph.communities, voiceCommunity],
+    builtAt: graph.builtAt,
+  };
+}
+
 dashApi.get('/codegraph', async (req, res: Response) => {
   try {
     const refresh = req.query.refresh === '1';
@@ -736,11 +865,189 @@ dashApi.get('/codegraph', async (req, res: Response) => {
       res.status(200).json(_codegraphCache.data);
       return;
     }
-    const data = await buildCodeGraph();
+    const base = await buildCodeGraph();
+    const data = injectVoiceCommunity(base);
     _codegraphCache = { data, ts: now };
     res.status(200).json(data);
   } catch (err) {
     logger.error('CodeGraph build failed', { module: 'dashboard.codegraph', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 🎙️ Voice — Foundry Realtime API session minting + Teams call invite
+// ---------------------------------------------------------------------------
+// /voice/session  — mint an ephemeral Realtime session via Azure OpenAI's
+//                   /openai/realtimeapi/sessions endpoint. Browser uses the
+//                   returned client_secret for direct WebRTC SDP exchange
+//                   to wss://<region>.realtimeapi-preview.ai.azure.com.
+// /voice/event    — browser POSTs each Realtime event so we can light up the
+//                   voice community in the Codebase tab and stream into the
+//                   shared agent event ring (mind/codegraph visualisation).
+// /voice/invite   — sends the signed-in user a Teams DM with a deep link
+//                   into the dashboard's voice panel (uses existing proactive
+//                   sendDirectMessage plumbing).
+// ---------------------------------------------------------------------------
+
+const VOICE_DEPLOYMENT = process.env.AZURE_OPENAI_REALTIME_DEPLOYMENT || 'gpt-realtime-mini';
+const VOICE_API_VERSION = '2025-04-01-preview';
+const VOICE_REGION = process.env.AZURE_OPENAI_REALTIME_REGION || 'eastus2';
+
+dashApi.post('/voice/session', async (req, res: Response) => {
+  try {
+    const principal = (req as express.Request & { easyAuthPrincipal?: { oid?: string; name?: string } }).easyAuthPrincipal;
+    const voice = (req.body && typeof req.body.voice === 'string' ? req.body.voice : 'verse').slice(0, 32);
+    const instructions = (req.body && typeof req.body.instructions === 'string'
+      ? req.body.instructions
+      : `You are Cassidy, ${principal?.name || 'the user'}'s autonomous chief of staff. Be warm, concise, and direct. Greet them by first name. Offer to brief them on today's plan, recent CorpGen activity, or any urgent items from the work queue.`).slice(0, 4000);
+
+    const tokenResp = await credential.getToken('https://cognitiveservices.azure.com/.default');
+    if (!tokenResp?.token) {
+      res.status(500).json({ error: 'Failed to acquire AAD token for Cognitive Services' });
+      return;
+    }
+
+    const url = `${config.openAiEndpoint.replace(/\/$/, '')}/openai/realtimeapi/sessions?api-version=${VOICE_API_VERSION}`;
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tokenResp.token}`,
+      },
+      body: JSON.stringify({
+        model: VOICE_DEPLOYMENT,
+        voice,
+        instructions,
+        modalities: ['audio', 'text'],
+      }),
+    });
+
+    const text = await upstream.text();
+    if (!upstream.ok) {
+      logger.error('Realtime session mint failed', {
+        module: 'voice.session',
+        status: upstream.status,
+        body: text.slice(0, 500),
+      });
+      res.status(upstream.status).json({ error: 'Realtime session mint failed', detail: text.slice(0, 500) });
+      return;
+    }
+
+    let session: { id?: string; client_secret?: { value?: string; expires_at?: number } };
+    try { session = JSON.parse(text); } catch { session = {}; }
+
+    recordEvent({
+      kind: 'agent.message',
+      label: '🎙️ Voice session minted',
+      status: 'ok',
+      data: { module: 'voice', sessionId: session.id, deployment: VOICE_DEPLOYMENT, requestedBy: principal?.name },
+      correlationId: principal?.oid,
+    });
+
+    res.status(200).json({
+      sessionId: session.id,
+      ephemeralKey: session.client_secret?.value,
+      expiresAt: session.client_secret?.expires_at,
+      webrtcUrl: `https://${VOICE_REGION}.realtimeapi-preview.ai.azure.com/v1/realtimertc`,
+      deployment: VOICE_DEPLOYMENT,
+      voice,
+      apiVersion: VOICE_API_VERSION,
+    });
+  } catch (err) {
+    logger.error('Voice session error', { module: 'voice.session', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Map Realtime API event types → voice graph node IDs so the front-end can
+// pulse the right ant-trail. Keys are documented event types.
+const VOICE_EVENT_NODE_MAP: Record<string, string[]> = {
+  'session.created':                          ['voice/Session', 'voice/RealtimeModel'],
+  'session.updated':                          ['voice/Session'],
+  'input_audio_buffer.append':                ['voice/Microphone', 'voice/InputAudioBuffer'],
+  'input_audio_buffer.committed':             ['voice/InputAudioBuffer'],
+  'input_audio_buffer.speech_started':        ['voice/VAD', 'voice/SemanticVAD', 'voice/BargeInHandler'],
+  'input_audio_buffer.speech_stopped':        ['voice/VAD'],
+  'conversation.item.created':                ['voice/ConversationMemory'],
+  'conversation.item.input_audio_transcription.completed': ['voice/Transcriber', 'voice/ConversationMemory'],
+  'conversation.item.truncated':              ['voice/TruncationPoint', 'voice/ConversationMemory'],
+  'conversation.item.deleted':                ['voice/ConversationMemory'],
+  'response.created':                         ['voice/RealtimeModel', 'voice/ContextWindow'],
+  'response.audio.delta':                     ['voice/AudioGenerator', 'voice/AudioDeltaStream', 'voice/Speaker'],
+  'response.audio.done':                      ['voice/AudioGenerator'],
+  'response.audio_transcript.delta':          ['voice/TextTranscriptStream'],
+  'response.audio_transcript.done':           ['voice/TextTranscriptStream'],
+  'response.function_call_arguments.delta':   ['voice/ToolCaller'],
+  'response.function_call_arguments.done':    ['voice/ToolCaller', 'voice/MCPServer'],
+  'response.done':                            ['voice/RealtimeModel'],
+  'response.cancelled':                       ['voice/ResponseInterruptor'],
+  'rate_limits.updated':                      ['voice/AppInsights'],
+  'error':                                    ['voice/AppInsights'],
+};
+
+dashApi.post('/voice/event', (req, res: Response) => {
+  try {
+    const principal = (req as express.Request & { easyAuthPrincipal?: { oid?: string; name?: string } }).easyAuthPrincipal;
+    const ev = req.body as { type?: string; label?: string; data?: Record<string, unknown> };
+    const type = typeof ev?.type === 'string' ? ev.type.slice(0, 80) : 'unknown';
+    const nodes = VOICE_EVENT_NODE_MAP[type] || [];
+    recordEvent({
+      kind: type === 'error' ? 'tool.result' : 'agent.message',
+      label: `🎙️ ${ev?.label || type}`,
+      status: type === 'error' ? 'error' : 'ok',
+      data: {
+        module: 'voice',
+        eventType: type,
+        nodes,
+        ...(ev?.data || {}),
+      },
+      correlationId: principal?.oid,
+    });
+    res.status(204).end();
+  } catch (err) {
+    logger.error('Voice event ingest failed', { module: 'voice.event', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+dashApi.post('/voice/invite', async (req, res: Response) => {
+  try {
+    const principal = (req as express.Request & { easyAuthPrincipal?: { oid?: string; name?: string; email?: string } }).easyAuthPrincipal;
+    if (!principal?.oid) {
+      res.status(401).json({ error: 'No principal' });
+      return;
+    }
+    const base = (config.baseUrl || `https://${process.env.WEBSITE_HOSTNAME || 'cassidyopsagent-webapp.azurewebsites.net'}`).replace(/\/$/, '');
+    const link = `${base}/dashboard/?voice=1`;
+
+    const { sendDirectMessage } = await import('./proactive/proactiveEngine');
+    const greeting = principal.name?.split(' ')[0] || 'there';
+    const text = [
+      `🎙️ **Hey ${greeting} — I'm ready to talk.**`,
+      ``,
+      `Tap to open the voice console and we'll connect over Foundry Realtime (gpt-realtime-mini, WebRTC ~100 ms latency):`,
+      ``,
+      `👉 [Open voice console](${link})`,
+      ``,
+      `_While we're talking you'll see the voice synapses light up live on the Codebase tab._`,
+    ].join('\n');
+
+    const result = await sendDirectMessage(principal.oid, text);
+    if (!result.ok) {
+      res.status(409).json({ error: result.reason || 'Failed to send Teams message' });
+      return;
+    }
+    recordEvent({
+      kind: 'proactive.tick',
+      label: `📞 Voice invite sent to ${principal.name || principal.email || principal.oid}`,
+      status: 'ok',
+      data: { module: 'voice.invite', link },
+      correlationId: principal.oid,
+    });
+    res.status(200).json({ ok: true, link });
+  } catch (err) {
+    logger.error('Voice invite failed', { module: 'voice.invite', error: String(err) });
     res.status(500).json({ error: String(err) });
   }
 });

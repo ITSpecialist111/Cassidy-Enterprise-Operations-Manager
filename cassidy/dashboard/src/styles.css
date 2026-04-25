@@ -322,3 +322,58 @@ a:hover { text-decoration: underline; }
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
+
+/* ---- Voice panel ---- */
+.voice-panel {
+  display: flex; flex-direction: column; gap: 14px;
+  max-width: 880px; margin: 0 auto;
+}
+.voice-header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.voice-header h2 { font-size: 20px; }
+.voice-meta { font-size: 12px; color: var(--muted); font-family: var(--fontMono); }
+.voice-meta code { color: #bb9af7; background: rgba(187,154,247,0.08); padding: 1px 6px; border-radius: 3px; }
+.voice-controls { display: flex; gap: 10px; flex-wrap: wrap; }
+.voice-btn-stop { background: var(--bad) !important; color: #fff !important; }
+.btn-secondary {
+  display: inline-block; padding: 10px 18px;
+  background: transparent; color: var(--accent);
+  border: 1px solid var(--accent); border-radius: 6px;
+  font-weight: 500; cursor: pointer; font-size: 14px;
+}
+.btn-secondary:hover { background: rgba(122, 162, 247, 0.1); }
+.btn-secondary:disabled { opacity: 0.5; cursor: wait; }
+.voice-info {
+  padding: 10px 14px;
+  background: rgba(122, 162, 247, 0.08);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 13px;
+}
+.voice-transcript {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+  min-height: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.voice-line { display: flex; gap: 14px; align-items: flex-start; }
+.voice-who {
+  flex-shrink: 0; width: 70px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--muted); padding-top: 2px;
+}
+.voice-line-cassidy .voice-who { color: #bb9af7; }
+.voice-line-you .voice-who { color: #7dcfff; }
+.voice-text { flex: 1; line-height: 1.5; font-size: 14px; }
+.voice-cursor {
+  display: inline-block;
+  margin-left: 2px;
+  color: #bb9af7;
+  animation: voice-blink 1s steps(2) infinite;
+}
+@keyframes voice-blink { 50% { opacity: 0; } }
