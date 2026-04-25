@@ -34,6 +34,10 @@ Cassidy answering inside a Microsoft Teams chat with live MCP tool calls (Calend
 
 ![Cassidy interacting in Microsoft Teams](cassidy/Screenshots/MSTeams_CassidyInteraction.png)
 
+### Mission Control — Codebase tab (synaptic firing along real import edges)
+
+A Graphify-inspired in-house prototype. Every TypeScript source file in `cassidy/src` becomes a node, every `import` becomes an edge, top-level folders become colour-coded communities. While Cassidy thinks (or even just rests), white-hot "ants" walk straight chords along real import wiring and recently-fired modules glow as breathing orbs — a literal, faithful visualisation of the codebase activating itself. Auto-labels appear on zoom; clicking a node opens a telemetry pop-out with a heuristic role description and a click-through list of every neighbour. Built entirely on the same `force-graph` canvas library as Agent Mind — no Graphify code is bundled or copied.
+
 ## Overview
 
 Cassidy is an AI-powered operations manager that autonomously handles:

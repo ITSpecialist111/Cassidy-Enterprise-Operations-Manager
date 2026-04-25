@@ -2,6 +2,39 @@
 
 All notable changes to the Cassidy Enterprise Operations Manager are documented here.
 
+## [unreleased] — 2026-04-25
+
+### Mission Control — new Codebase tab (Graphify-inspired starfield)
+
+A new `✨ Codebase` tab visualises Cassidy's own source tree as a living brain. Every TypeScript file under `cassidy/src` is a node, every `import` is an edge, every top-level folder is a colour-coded community. Built entirely in-house on the same `force-graph` 2D canvas library as Agent Mind — no Graphify code bundled or copied.
+
+#### Backend — `dashApi.get('/codegraph')` in `cassidy/src/index.ts`
+
+- Walks `__dirname/../src` recursively, parses ESM `import … from '…'` declarations with regex, resolves relative paths to file IDs.
+- Returns `{ nodes, edges, communities, builtAt }`. 5-minute in-memory cache; `?refresh=1` rebuilds. Communities derived from top-level folder; 18-colour palette.
+- Verified against on-disk: **69 source files, 83 import edges, 13 communities** (corpgen 14, tools 9, intelligence 3, voice 3, reports 3, proactive 3, memory 3, meetings 3, orchestrator 2, workQueue 2, autonomous 1, scheduler 1, plus 22 root files).
+
+#### Frontend — `cassidy/dashboard/src/CodeGraph.tsx` (new)
+
+- **Synaptic firing along real import edges** — when an agent event lands, picks a high-degree epicentre per matching community and fires a cascade of synapses along the epicentre's actual `neighboursRef[id]` adjacency list (built from `data.edges`). Plus an intra-community chain and a slow inter-event bridge from the previous thought to the current one.
+- **Ambient resting-state activity** — a `setInterval` fires baseline synapses every 1.2s along random import edges so the graph always feels alive, even between agent events.
+- **Ants on straight chords** — replaces the original bezier curves (which appeared to "snapshot then jump" each frame as nodes drifted under the d3-force layout). Each synapse draws a faint static chord (alpha 0.18) plus 3 white-hot ants at offset phases (0, 0.33, 0.67) with eased motion so they momentarily slow at the endpoints — biological feel, no curve-recomputation jitter.
+- **Breathing orbs on active nodes** — recently-fired nodes glow with a 12s, 3-layer halo (very soft 1.6× outer + mid + crisp white centre ring) that gently oscillates, so a freshly-pulsed node stays visibly active for the whole synapse lifetime.
+- **Continuous animation without interaction** — root cause investigation: `force-graph`'s render loop is gated by the d3-force simulation's alpha; once alpha drops below `alphaMin` the simulation stops, no animation frames are requested, and the synapse overlay freezes until the user mouses or zooms. Fixed by setting `d3AlphaMin(0)` + `d3AlphaDecay(0)` (simulation runs forever) with `d3VelocityDecay(0.97)` (so nodes barely drift after warmup). Manual `graph.refresh()` calls had been a no-op — that method doesn't exist on force-graph.
+- **Auto labels on zoom** — once `globalScale > 1.6` every visible node renders its label with a soft dark backing rect; alpha eases in as you zoom further so it never feels abrupt.
+- **Telemetry pop-out** — clicking a node shows a heuristic role description (entrypoint, tool, orchestrator, intelligence module, etc.), the community colour dot inline, and a scrollable **CONNECTED TO** list of every real import neighbour. Each neighbour is a button that re-selects and centres on it, so demos can walk the graph hop-by-hop.
+- **Camera no longer reset by background refetches** — disabled `staleTime`/`gcTime`/`refetchOnWindowFocus`/`refetchOnReconnect`/`refetchOnMount` on the `useQuery` and added a `loadedBuiltAtRef` guard on the data-load effect so the user's zoom level is preserved during demos. Manual `↻` button still works.
+- **Search box** with live highlight; **community sidebar** with click-to-toggle visibility; **Fit** button.
+
+### Conversation memory restored — storage-account network fix
+
+Cassidy was losing context turn-to-turn (e.g. asked for a deep-research summary, then "exec deck please" returned a generic clarifier with no awareness of the prior request). Two-layer breakage on the `cassidyschedsa` Azure Storage account:
+
+1. **Network**: `publicNetworkAccess: Disabled` with no private endpoint, no VNet rules, and no VNet integration on the webapp → every storage call rejected with `AuthorizationFailure` (Azure's catch-all when the account is unreachable). `loadHistory()` returned `[]` every turn, `saveHistory()` swallowed the failure silently — so each user message looked like a fresh conversation to the LLM.
+2. **RBAC ambiguity**: the webapp has both system-assigned and user-assigned managed identities. `Storage Table Data Contributor` was only on the system-assigned, but `DefaultAzureCredential` was selecting the user-assigned `cassidy-agentic-mi`.
+
+**Fix**: granted `cassidy-agentic-mi` Table + Blob Data Contributor on `cassidyschedsa`, then re-enabled public network access. Shared-key access remains disabled, so AAD-RBAC is still the only auth path — no security regression. Post-restart logs are clean of `AuthorizationFailure` and `conversationRefs` is non-zero again, confirming hydration works.
+
 ## [unreleased] — 2026-04-21
 
 ### Agent Mind — Obsidian-style 2D knowledge-graph rebuild
