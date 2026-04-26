@@ -17,6 +17,7 @@ import { agentApplication, credential, runAutonomousStandup, userInsightCache, m
 import { setAdapter } from './scheduler/proactiveNotifier';
 import { initAutonomousLoop, stopAutonomousLoop } from './autonomous/autonomousLoop';
 import { initProactiveEngine, stopProactiveEngine, triggerSpecific } from './proactive/proactiveEngine';
+import { initPresenceWatch, stopPresenceWatch, getPresenceWatchSnapshot } from './proactive/presenceWatch';
 import { startCorpGenScheduler, stopCorpGenScheduler } from './corpgenScheduler';
 import { getAllConversationRefs } from './proactive/userRegistry';
 import { handleTranscriptWebhook, postToMeetingChat } from './meetings/meetingMonitor';
@@ -27,6 +28,8 @@ import {
   handleAcsEvent,
   attachAcsMediaWebSocket,
   isAcsConfigured,
+  handleIncomingCallEvent,
+  getActiveCallSnapshot,
 } from './voice/acsBridge';
 import { seedDefaultAgents } from './orchestrator/agentRegistry';
 import { config, features, logFeatureStatus } from './featureConfig';
@@ -1023,6 +1026,71 @@ const VOICE_EVENT_NODE_MAP: Record<string, string[]> = {
   'error':                                    ['voice/AppInsights'],
 };
 
+// /voice/cte-token — mint an ACS Teams-user token for the Cassidy CTE
+// identity. The dashboard uses this with @azure/communication-calling's
+// createTeamsCallAgent to place a federated 1:1 Teams call (no Teams Phone
+// licence required). See voice/cteToken.ts for the underlying flow.
+dashApi.post('/voice/cte-token', async (_req, res: Response) => {
+  try {
+    const { isCteConfigured, getCteAcsToken } = await import('./voice/cteToken');
+    if (!isCteConfigured()) {
+      res.status(503).json({ error: 'CTE not configured' });
+      return;
+    }
+    const tok = await getCteAcsToken();
+    res.status(200).json({
+      token: tok.token,
+      expiresOn: tok.expiresOn,
+      userObjectId: tok.userObjectId,
+      defaultTargetTeamsUserId: process.env.CTE_DEFAULT_TARGET_TEAMS_USER_ID || null,
+    });
+  } catch (err: unknown) {
+    logger.error('CTE token mint failed', { module: 'voice.cte', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// /voice/server-call — server-side ACS Call Automation bridge.
+// Cassidy's voice (Foundry Realtime) is bridged in Node, NOT in the browser,
+// so the call survives the dashboard tab being closed. Identity is the ACS
+// resource (not the federated Teams user). Returns the ACS callConnectionId.
+dashApi.post('/voice/server-call', async (req, res: Response) => {
+  try {
+    if (!isAcsConfigured()) {
+      res.status(503).json({ error: 'ACS not configured (ACS_CONNECTION_STRING missing)' });
+      return;
+    }
+    const principal = (req as express.Request & { easyAuthPrincipal?: { oid?: string; name?: string } }).easyAuthPrincipal;
+    const body = req.body as { teamsUserAadOid?: string; instructions?: string; voice?: string };
+    const target = (body?.teamsUserAadOid || process.env.CTE_DEFAULT_TARGET_TEAMS_USER_ID || '').trim();
+    if (!target) {
+      res.status(400).json({ error: 'teamsUserAadOid is required' });
+      return;
+    }
+    const r = await initiateOutboundTeamsCall({
+      teamsUserAadOid: target,
+      requestedBy: principal?.name,
+      instructions: body?.instructions,
+      voice: body?.voice,
+    });
+    res.status(200).json({ ok: true, mode: 'server-bridge', target, ...r });
+  } catch (err: unknown) {
+    logger.error('Server-side voice call failed', { module: 'voice.acs', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// /voice/server-calls — list active server-bridged calls (diagnostics).
+dashApi.get('/voice/server-calls', (_req, res: Response) => {
+  res.status(200).json({ calls: getActiveCallSnapshot() });
+});
+
+// /voice/presence-watch — diagnostic snapshot of the autonomous presence
+// trigger (when Cassidy will call configured target users on her own).
+dashApi.get('/voice/presence-watch', (_req, res: Response) => {
+  res.status(200).json(getPresenceWatchSnapshot());
+});
+
 dashApi.post('/voice/event', (req, res: Response) => {
   try {
     const principal = (req as express.Request & { easyAuthPrincipal?: { oid?: string; name?: string } }).easyAuthPrincipal;
@@ -1409,21 +1477,11 @@ server.get(/^\/dashboard(\/.*)?$/, (_req, res: Response) => {
   });
 });
 
-// Apply JWT auth middleware for all routes below this point
-server.use(authorizeJWT(authConfig));
-
-// Main messages endpoint — CloudAdapter pattern (correct per Agent 365 SDK)
-server.post('/api/messages', (req: Request, res: Response) => {
-  const adapter = agentApplication.adapter as CloudAdapter;
-  adapter.process(req, res, async (context) => {
-    await agentApplication.run(context);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // ACS Call Automation callback endpoint — Cloud Events array of CallConnected,
 // CallDisconnected, etc. ACS POSTs these to the callbackUri we registered when
-// placing the outbound call.
+// placing the outbound call. MUST be mounted BEFORE authorizeJWT — ACS sends
+// no Authorization header so the JWT middleware would 401 every event.
 // ---------------------------------------------------------------------------
 server.post('/api/calls/acs-events', (req: express.Request, res: Response) => {
   try {
@@ -1433,6 +1491,79 @@ server.post('/api/calls/acs-events', (req: express.Request, res: Response) => {
     logger.error('ACS event handler failed', { module: 'voice.acs', error: String(err) });
     res.status(500).end();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Event Grid IncomingCall webhook — Cassidy auto-answers any call placed to
+// her ACS identity ("acs:<resourceId>") and bridges into Foundry Realtime so
+// the caller hears her voice immediately.
+//
+// Wire this up via:
+//   az eventgrid event-subscription create \
+//     --name cassidy-incoming-calls \
+//     --source-resource-id <ACS resource id> \
+//     --endpoint https://<host>/api/calls/incoming-call \
+//     --included-event-types Microsoft.Communication.IncomingCall
+//
+// Returns the EG validation echo on first POST (subscription handshake).
+// ---------------------------------------------------------------------------
+server.post('/api/calls/incoming-call', async (req: express.Request, res: Response) => {
+  try {
+    const result = await handleIncomingCallEvent(req.body);
+    if ('validationResponse' in result) {
+      res.status(200).json({ validationResponse: result.validationResponse });
+      return;
+    }
+    res.status(200).json(result);
+  } catch (err: unknown) {
+    logger.error('Incoming-call handler failed', { module: 'voice.acs', error: String(err) });
+    res.status(500).end();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Internal trigger — lets the autonomous loop place a server-side bridged
+// call without going through Easy Auth. Gated by SCHEDULED_SECRET (same
+// pattern as /api/proactive-trigger).
+// ---------------------------------------------------------------------------
+server.post('/api/internal/voice/server-call', async (req: express.Request, res: Response) => {
+  try {
+    const provided = (req.headers['x-cassidy-secret'] as string | undefined) || (req.body && (req.body as { secret?: unknown }).secret);
+    if (!verifySecret(provided)) {
+      res.status(401).json({ error: 'invalid secret' });
+      return;
+    }
+    if (!isAcsConfigured()) {
+      res.status(503).json({ error: 'ACS not configured' });
+      return;
+    }
+    const body = req.body as { teamsUserAadOid?: string; instructions?: string; voice?: string; requestedBy?: string };
+    if (!body?.teamsUserAadOid) {
+      res.status(400).json({ error: 'teamsUserAadOid is required' });
+      return;
+    }
+    const r = await initiateOutboundTeamsCall({
+      teamsUserAadOid: body.teamsUserAadOid,
+      instructions: body.instructions,
+      voice: body.voice,
+      requestedBy: body.requestedBy || 'Cassidy (autonomous)',
+    });
+    res.status(200).json({ ok: true, ...r });
+  } catch (err: unknown) {
+    logger.error('Internal server-call endpoint failed', { module: 'voice.acs', error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Apply JWT auth middleware for all routes below this point
+server.use(authorizeJWT(authConfig));
+
+// Main messages endpoint — CloudAdapter pattern (correct per Agent 365 SDK)
+server.post('/api/messages', (req: Request, res: Response) => {
+  const adapter = agentApplication.adapter as CloudAdapter;
+  adapter.process(req, res, async (context) => {
+    await agentApplication.run(context);
+  });
 });
 
 // Agent-to-Agent (A2A) messages endpoint
@@ -1468,6 +1599,11 @@ const httpServer = server.listen(port, host, () => {
   // composes natural GPT-5 messages, sends via Teams 1:1 chat
   initProactiveEngine(adapter);
   logger.info('Proactive engine started', { module: 'startup' });
+
+  // Start the autonomous presence-trigger showcase — when configured target users
+  // come online and stay online for the debounce window, Cassidy places an
+  // outbound ACS Teams call automatically (CorpGen Day-Init pattern).
+  initPresenceWatch();
 
   // Seed the multi-agent registry with known specialist agents
   seedDefaultAgents().catch(err => logger.error('Agent registry seeding failed', { module: 'startup', error: String(err) }));
@@ -1510,6 +1646,7 @@ function gracefulShutdown(signal: string) {
   logger.info('Graceful shutdown initiated', { module: 'lifecycle', signal });
   stopAutonomousLoop();
   stopProactiveEngine();
+  stopPresenceWatch();
   stopCorpGenScheduler();
   stopAutoRenewal();
   httpServer.close(() => {

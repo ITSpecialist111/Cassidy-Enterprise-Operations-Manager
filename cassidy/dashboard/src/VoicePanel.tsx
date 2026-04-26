@@ -236,7 +236,11 @@ export function VoicePanel() {
         return;
       }
       setInviteState('sent');
-      setInviteMsg(`Check Teams — message sent to your chat with Cassidy${body.resolvedHow ? ` (resolved via ${body.resolvedHow})` : ''}.`);
+      if (body.mode === 'acs-teams-call') {
+        setInviteMsg(`📞 Cassidy is calling you on Teams now — your Teams app should ring within ~5–10s. (call ${String(body.callConnectionId || '').slice(0, 8)}…)`);
+      } else {
+        setInviteMsg(`Check Teams — message sent to your chat with Cassidy${body.resolvedHow ? ` (resolved via ${body.resolvedHow})` : ''}.`);
+      }
     } catch (e) {
       setInviteState('error');
       setInviteMsg(String(e));

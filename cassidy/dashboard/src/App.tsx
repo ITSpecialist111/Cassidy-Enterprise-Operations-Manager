@@ -4,6 +4,7 @@ import { useState, lazy, Suspense } from 'react';
 const NeuralCore = lazy(() => import('./NeuralCore').then(m => ({ default: m.NeuralCore })));
 const CodeGraph = lazy(() => import('./CodeGraph').then(m => ({ default: m.CodeGraph })));
 const VoicePanel = lazy(() => import('./VoicePanel').then(m => ({ default: m.VoicePanel })));
+const CteCallPanel = lazy(() => import('./CteCallPanel').then(m => ({ default: m.CteCallPanel })));
 
 interface Snapshot {
   agent: string;
@@ -366,6 +367,7 @@ export function App() {
           {page === 'voice' && (
             <Suspense fallback={<div className="empty" style={{ padding: 40, textAlign: 'center' }}>Loading voice console…</div>}>
               <VoicePanel />
+              <CteCallPanel />
             </Suspense>
           )}
         </main>
